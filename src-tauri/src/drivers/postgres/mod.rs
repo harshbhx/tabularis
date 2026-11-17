@@ -1157,7 +1157,14 @@ async fn exec_on_pg_client(
 
     let (final_query, pagination_meta) = if is_select && limit.is_some() {
         let l = limit.unwrap();
-        let data_query = crate::drivers::common::build_paginated_query(query, l, page);
+        let data_query = crate::drivers::common::build_paginated_query(
+            query,
+            l,
+            page,
+            crate::drivers::common::CommentRules::for_dialect(
+                crate::drivers::driver_trait::SqlDialect::Postgres,
+            ),
+        );
         manual_limit = None;
         (data_query, Some((l, page)))
     } else {
