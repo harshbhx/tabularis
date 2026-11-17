@@ -205,14 +205,18 @@ pub struct PluginReadme {
 }
 
 pub fn get_current_platform() -> String {
-    let os = std::env::consts::OS;
-    let arch = std::env::consts::ARCH;
+    platform_key(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// Map an OS/architecture pair to the registry's canonical platform key.
+fn platform_key(os: &str, arch: &str) -> String {
     match (os, arch) {
         ("linux", "x86_64") => "linux-x64".to_string(),
         ("linux", "aarch64") => "linux-arm64".to_string(),
         ("macos", "aarch64") => "darwin-arm64".to_string(),
         ("macos", "x86_64") => "darwin-x64".to_string(),
         ("windows", "x86_64") => "win-x64".to_string(),
+        ("windows", "aarch64") => "win-arm64".to_string(),
         _ => format!("{}-{}", os, arch),
     }
 }
@@ -272,6 +276,17 @@ pub async fn resolve_tabularium_asset(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn platform_key_maps_all_supported_targets() {
+        assert_eq!(platform_key("linux", "x86_64"), "linux-x64");
+        assert_eq!(platform_key("linux", "aarch64"), "linux-arm64");
+        assert_eq!(platform_key("macos", "x86_64"), "darwin-x64");
+        assert_eq!(platform_key("macos", "aarch64"), "darwin-arm64");
+        assert_eq!(platform_key("windows", "x86_64"), "win-x64");
+        assert_eq!(platform_key("windows", "aarch64"), "win-arm64");
+        assert_eq!(platform_key("freebsd", "x86_64"), "freebsd-x86_64");
+    }
 
     #[test]
     fn classify_not_installed_is_install() {
