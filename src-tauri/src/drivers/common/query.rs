@@ -1,3 +1,6 @@
+use crate::drivers::driver_trait::SqlDialect;
+use crate::drivers::sql_syntax::SqlSyntax;
+
 /// Check if a query is a SELECT statement.
 ///
 /// Leading SQL comments are stripped before checking, matching
@@ -314,6 +317,35 @@ pub fn extract_user_offset(query: &str) -> Option<u32> {
     None
 }
 
+/// Line-comment rules of a SQL dialect, as far as the pagination rewriter
+/// needs them to find a trailing comment.
+///
+/// Derived from the driver's resolved [`SqlSyntax`], the same source
+/// [`strip_leading_sql_comments_for`] takes its `hash_comments` flag from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommentRules {
+    /// `#` starts a line comment (MySQL). Elsewhere it is an operator
+    /// (PostgreSQL `#>`, `#>>`, `#-`).
+    pub hash_comments: bool,
+    /// `--` only starts a comment when followed by whitespace (MySQL).
+    /// PostgreSQL and SQLite accept `--note`.
+    pub line_comment_requires_space: bool,
+}
+
+impl CommentRules {
+    pub fn from_syntax(syntax: &SqlSyntax) -> Self {
+        Self {
+            hash_comments: syntax.hash_comments,
+            line_comment_requires_space: syntax.line_comment_requires_space,
+        }
+    }
+
+    /// The built-in rules of `dialect`.
+    pub fn for_dialect(dialect: SqlDialect) -> Self {
+        Self::from_syntax(&SqlSyntax::preset(Some(dialect)))
+    }
+}
+
 /// Build a paginated query by stripping any user-supplied LIMIT/OFFSET and
 /// appending pagination clauses directly. ORDER BY is left in place so that
 /// table-qualified column references (e.g. `o.created_at`) remain valid —
@@ -325,10 +357,15 @@ pub fn extract_user_offset(query: &str) -> Option<u32> {
 /// too: it is added to the per-page offset so that pagination walks the result
 /// set the user actually asked for (the rows after their OFFSET). Discarding it
 /// silently collapsed `LIMIT 1 OFFSET 1` to `LIMIT 1 OFFSET 0` on page 1.
-pub fn build_paginated_query(query: &str, page_size: u32, page: u32) -> String {
+pub fn build_paginated_query(
+    query: &str,
+    page_size: u32,
+    page: u32,
+    comments: CommentRules,
+) -> String {
     let page_offset = calculate_offset(page, page_size);
-    let normalized = trim_trailing_statement_terminator(query);
-    let clause_source = match trailing_comment_start(normalized) {
+    let normalized = trim_trailing_statement_terminator(query, comments);
+    let clause_source = match trailing_comment_start(normalized, comments) {
         Some(comment_start) => normalized[..comment_start].trim_end(),
         None => normalized,
     };
@@ -352,7 +389,7 @@ pub fn build_paginated_query(query: &str, page_size: u32, page: u32) -> String {
 
     let offset = user_offset.saturating_add(page_offset);
 
-    let separator = if trailing_comment_start(&base).is_some() {
+    let separator = if trailing_comment_start(&base, comments).is_some() {
         "\n"
     } else {
         " "
@@ -364,7 +401,7 @@ pub fn build_paginated_query(query: &str, page_size: u32, page: u32) -> String {
     )
 }
 
-fn trim_trailing_statement_terminator(query: &str) -> &str {
+fn trim_trailing_statement_terminator(query: &str, comments: CommentRules) -> &str {
     let original_end = query.trim_end().len();
     let mut end = query.len();
 
@@ -372,7 +409,7 @@ fn trim_trailing_statement_terminator(query: &str) -> &str {
         let trimmed = query[..end].trim_end();
         end = trimmed.len();
 
-        if let Some(comment_start) = trailing_comment_start(trimmed) {
+        if let Some(comment_start) = trailing_comment_start(trimmed, comments) {
             end = comment_start;
             continue;
         }
@@ -387,7 +424,7 @@ fn trim_trailing_statement_terminator(query: &str) -> &str {
     }
 }
 
-fn trailing_comment_start(sql: &str) -> Option<usize> {
+fn trailing_comment_start(sql: &str, comments: CommentRules) -> Option<usize> {
     #[derive(Clone, Copy)]
     enum State {
         Normal,
@@ -416,7 +453,9 @@ fn trailing_comment_start(sql: &str) -> Option<usize> {
                 if ch == '-'
                     && i + 1 < chars.len()
                     && chars[i + 1].1 == '-'
-                    && (i + 2 >= chars.len() || chars[i + 2].1.is_whitespace())
+                    && (!comments.line_comment_requires_space
+                        || i + 2 >= chars.len()
+                        || chars[i + 2].1.is_whitespace())
                 {
                     candidate.get_or_insert(byte);
                     state = State::LineComment;
@@ -424,7 +463,7 @@ fn trailing_comment_start(sql: &str) -> Option<usize> {
                     continue;
                 }
 
-                if ch == '#' {
+                if comments.hash_comments && ch == '#' {
                     candidate.get_or_insert(byte);
                     state = State::HashComment;
                     i += 1;

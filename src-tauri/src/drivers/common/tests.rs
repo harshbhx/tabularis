@@ -1,5 +1,7 @@
+use crate::drivers::driver_trait::SqlDialect;
+
 use super::{
-    build_paginated_query, calculate_query_timing, calculate_query_timing_from_start,
+    build_paginated_query, CommentRules, calculate_query_timing, calculate_query_timing_from_start,
     decode_blob_wire_format, encode_blob, encode_blob_full, full_type_if_distinct, i64_to_json,
     is_explainable_query, is_explainable_query_for, is_select_query, is_select_query_for,
     parse_unsafe_bigint_string, returns_result_set, returns_result_set_for,
@@ -7,6 +9,18 @@ use super::{
     transaction_effect, u64_to_json, TransactionEffect, DEFAULT_MAX_BLOB_SIZE, JS_MAX_SAFE_INTEGER,
     JS_MAX_SAFE_UINT, MAX_BLOB_PREVIEW_SIZE,
 };
+
+fn mysql() -> CommentRules {
+    CommentRules::for_dialect(SqlDialect::Mysql)
+}
+
+fn postgres() -> CommentRules {
+    CommentRules::for_dialect(SqlDialect::Postgres)
+}
+
+fn sqlite() -> CommentRules {
+    CommentRules::for_dialect(SqlDialect::Sqlite)
+}
 
 #[test]
 fn test_decode_blob_wire_format_valid() {
@@ -343,7 +357,7 @@ fn test_extract_user_limit_table_name_contains_limit_with_real_limit() {
 #[test]
 fn test_build_paginated_query_no_user_limit() {
     let q = "SELECT o.id FROM orders o ORDER BY o.created_at DESC";
-    let result = build_paginated_query(q, 100, 1);
+    let result = build_paginated_query(q, 100, 1, mysql());
     assert_eq!(
         result,
         "SELECT o.id FROM orders o ORDER BY o.created_at DESC LIMIT 101 OFFSET 0"
@@ -353,14 +367,14 @@ fn test_build_paginated_query_no_user_limit() {
 #[test]
 fn test_build_paginated_query_strips_trailing_semicolon() {
     let q = "SELECT DATABASE() AS current_db;";
-    let result = build_paginated_query(q, 1, 1);
+    let result = build_paginated_query(q, 1, 1, mysql());
     assert_eq!(result, "SELECT DATABASE() AS current_db LIMIT 2 OFFSET 0");
 }
 
 #[test]
 fn test_build_paginated_query_strips_trailing_semicolon_with_whitespace() {
     let q = "SELECT ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = DATABASE() ORDER BY ROUTINE_NAME;   ";
-    let result = build_paginated_query(q, 50, 1);
+    let result = build_paginated_query(q, 50, 1, mysql());
     assert_eq!(
         result,
         "SELECT ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = DATABASE() ORDER BY ROUTINE_NAME LIMIT 51 OFFSET 0"
@@ -370,84 +384,84 @@ fn test_build_paginated_query_strips_trailing_semicolon_with_whitespace() {
 #[test]
 fn test_build_paginated_query_strips_semicolon_before_line_comment() {
     let q = "SELECT DATABASE() AS current_db; -- current schema";
-    let result = build_paginated_query(q, 1, 1);
+    let result = build_paginated_query(q, 1, 1, mysql());
     assert_eq!(result, "SELECT DATABASE() AS current_db LIMIT 2 OFFSET 0");
 }
 
 #[test]
 fn test_build_paginated_query_strips_semicolon_before_hash_comment() {
     let q = "SELECT DATABASE() AS current_db; # current schema";
-    let result = build_paginated_query(q, 1, 1);
+    let result = build_paginated_query(q, 1, 1, mysql());
     assert_eq!(result, "SELECT DATABASE() AS current_db LIMIT 2 OFFSET 0");
 }
 
 #[test]
 fn test_build_paginated_query_strips_semicolon_before_block_comment() {
     let q = "SELECT DATABASE() AS current_db; /* current schema */";
-    let result = build_paginated_query(q, 1, 1);
+    let result = build_paginated_query(q, 1, 1, mysql());
     assert_eq!(result, "SELECT DATABASE() AS current_db LIMIT 2 OFFSET 0");
 }
 
 #[test]
 fn test_build_paginated_query_keeps_line_comment_marker_inside_string() {
     let q = "SELECT '--'; -- trailing comment";
-    let result = build_paginated_query(q, 1, 1);
+    let result = build_paginated_query(q, 1, 1, mysql());
     assert_eq!(result, "SELECT '--' LIMIT 2 OFFSET 0");
 }
 
 #[test]
 fn test_build_paginated_query_keeps_line_comment_marker_after_backslash_quote() {
     let q = r"SELECT 'it\'s -- not a comment'; -- trailing comment";
-    let result = build_paginated_query(q, 1, 1);
+    let result = build_paginated_query(q, 1, 1, mysql());
     assert_eq!(result, r"SELECT 'it\'s -- not a comment' LIMIT 2 OFFSET 0");
 }
 
 #[test]
 fn test_build_paginated_query_preserves_newline_after_inline_comment_before_semicolon() {
     let q = "SELECT 1 -- inline comment\n;";
-    let result = build_paginated_query(q, 1, 1);
+    let result = build_paginated_query(q, 1, 1, mysql());
     assert_eq!(result, "SELECT 1 -- inline comment\nLIMIT 2 OFFSET 0");
 }
 
 #[test]
 fn test_build_paginated_query_preserves_trailing_line_comment_without_semicolon() {
     let q = "SELECT 1 -- inline comment";
-    let result = build_paginated_query(q, 1, 1);
+    let result = build_paginated_query(q, 1, 1, mysql());
     assert_eq!(result, "SELECT 1 -- inline comment\nLIMIT 2 OFFSET 0");
 }
 
 #[test]
 fn test_build_paginated_query_preserves_trailing_hash_comment_without_semicolon() {
     let q = "SELECT 1 # inline comment";
-    let result = build_paginated_query(q, 1, 1);
+    let result = build_paginated_query(q, 1, 1, mysql());
     assert_eq!(result, "SELECT 1 # inline comment\nLIMIT 2 OFFSET 0");
 }
 
 #[test]
 fn test_build_paginated_query_honors_user_limit_before_trailing_line_comment() {
     let q = "SELECT * FROM t ORDER BY id LIMIT 50 -- cap";
-    let result = build_paginated_query(q, 100, 1);
+    let result = build_paginated_query(q, 100, 1, mysql());
     assert_eq!(result, "SELECT * FROM t ORDER BY id LIMIT 50 OFFSET 0");
 }
 
 #[test]
 fn test_build_paginated_query_honors_user_limit_before_trailing_hash_comment() {
     let q = "SELECT * FROM t ORDER BY id LIMIT 50 # cap";
-    let result = build_paginated_query(q, 100, 1);
+    let result = build_paginated_query(q, 100, 1, mysql());
     assert_eq!(result, "SELECT * FROM t ORDER BY id LIMIT 50 OFFSET 0");
 }
 
 #[test]
 fn test_build_paginated_query_honors_user_limit_offset_before_trailing_comment() {
     let q = "SELECT * FROM t ORDER BY id LIMIT 50 OFFSET 10 -- cap";
-    let result = build_paginated_query(q, 100, 1);
+    let result = build_paginated_query(q, 100, 1, mysql());
     assert_eq!(result, "SELECT * FROM t ORDER BY id LIMIT 50 OFFSET 10");
 }
 
 #[test]
 fn test_build_paginated_query_honors_user_limit_after_backslash_quoted_string() {
     let q = r"SELECT 'it\'s LIMIT 5' AS label FROM t LIMIT 50 -- cap";
-    let result = build_paginated_query(q, 100, 1);
+    let result = build_paginated_query(q, 100, 1, mysql());
     assert_eq!(
         result,
         r"SELECT 'it\'s LIMIT 5' AS label FROM t LIMIT 50 OFFSET 0"
@@ -457,42 +471,42 @@ fn test_build_paginated_query_honors_user_limit_after_backslash_quoted_string() 
 #[test]
 fn test_build_paginated_query_keeps_mysql_minus_expression() {
     let q = "SELECT 1--2;";
-    let result = build_paginated_query(q, 1, 1);
+    let result = build_paginated_query(q, 1, 1, mysql());
     assert_eq!(result, "SELECT 1--2 LIMIT 2 OFFSET 0");
 }
 
 #[test]
 fn test_build_paginated_query_keeps_hash_marker_inside_string() {
     let q = "SELECT '# not a comment'; # trailing comment";
-    let result = build_paginated_query(q, 1, 1);
+    let result = build_paginated_query(q, 1, 1, mysql());
     assert_eq!(result, "SELECT '# not a comment' LIMIT 2 OFFSET 0");
 }
 
 #[test]
 fn test_build_paginated_query_keeps_block_comment_marker_inside_string() {
     let q = "SELECT '/* not a comment */'; /* trailing comment */";
-    let result = build_paginated_query(q, 1, 1);
+    let result = build_paginated_query(q, 1, 1, mysql());
     assert_eq!(result, "SELECT '/* not a comment */' LIMIT 2 OFFSET 0");
 }
 
 #[test]
 fn test_build_paginated_query_honors_user_limit_before_trailing_semicolon() {
     let q = "SELECT * FROM t ORDER BY id LIMIT 50;";
-    let result = build_paginated_query(q, 100, 1);
+    let result = build_paginated_query(q, 100, 1, mysql());
     assert_eq!(result, "SELECT * FROM t ORDER BY id LIMIT 50 OFFSET 0");
 }
 
 #[test]
 fn test_build_paginated_query_honors_user_limit_offset_before_trailing_semicolon() {
     let q = "SELECT * FROM t ORDER BY id LIMIT 50 OFFSET 10;";
-    let result = build_paginated_query(q, 100, 1);
+    let result = build_paginated_query(q, 100, 1, mysql());
     assert_eq!(result, "SELECT * FROM t ORDER BY id LIMIT 50 OFFSET 10");
 }
 
 #[test]
 fn test_build_paginated_query_replaces_user_limit() {
     let q = "SELECT * FROM t ORDER BY id LIMIT 50";
-    let result = build_paginated_query(q, 100, 1);
+    let result = build_paginated_query(q, 100, 1, mysql());
     // User wanted 50 rows. page_size=100, so remaining=50, fetch = min(50, 101) = 50
     assert_eq!(result, "SELECT * FROM t ORDER BY id LIMIT 50 OFFSET 0");
 }
@@ -500,7 +514,7 @@ fn test_build_paginated_query_replaces_user_limit() {
 #[test]
 fn test_build_paginated_query_user_limit_second_page() {
     let q = "SELECT * FROM t ORDER BY id LIMIT 250";
-    let result = build_paginated_query(q, 100, 2);
+    let result = build_paginated_query(q, 100, 2, mysql());
     // offset=100, remaining=150, fetch = min(150, 101) = 101
     assert_eq!(result, "SELECT * FROM t ORDER BY id LIMIT 101 OFFSET 100");
 }
@@ -508,7 +522,7 @@ fn test_build_paginated_query_user_limit_second_page() {
 #[test]
 fn test_build_paginated_query_user_limit_exhausted() {
     let q = "SELECT * FROM t LIMIT 50";
-    let result = build_paginated_query(q, 100, 2);
+    let result = build_paginated_query(q, 100, 2, mysql());
     // offset=100, remaining=0 (50-100 saturates to 0), fetch = min(0, 101) = 0
     assert_eq!(result, "SELECT * FROM t LIMIT 0 OFFSET 100");
 }
@@ -516,7 +530,7 @@ fn test_build_paginated_query_user_limit_exhausted() {
 #[test]
 fn test_build_paginated_query_table_name_contains_limit() {
     let q = "SELECT * FROM tapp_appointment_message_event_limit ORDER BY id";
-    let result = build_paginated_query(q, 100, 1);
+    let result = build_paginated_query(q, 100, 1, mysql());
     assert_eq!(
         result,
         "SELECT * FROM tapp_appointment_message_event_limit ORDER BY id LIMIT 101 OFFSET 0"
@@ -526,7 +540,7 @@ fn test_build_paginated_query_table_name_contains_limit() {
 #[test]
 fn test_build_paginated_query_table_name_contains_limit_with_user_limit() {
     let q = "SELECT * FROM tapp_appointment_message_event_limit ORDER BY id LIMIT 10";
-    let result = build_paginated_query(q, 100, 1);
+    let result = build_paginated_query(q, 100, 1, mysql());
     assert_eq!(
         result,
         "SELECT * FROM tapp_appointment_message_event_limit ORDER BY id LIMIT 10 OFFSET 0"
@@ -559,7 +573,7 @@ fn test_build_paginated_query_preserves_user_offset() {
     // Regression for #273: `LIMIT 1 OFFSET 1` must keep OFFSET 1 on page 1,
     // not collapse to OFFSET 0 (which returned the 1st row instead of the 2nd).
     let q = "SELECT DISTINCT salary FROM employees ORDER BY salary DESC LIMIT 1 OFFSET 1";
-    let result = build_paginated_query(q, 100, 1);
+    let result = build_paginated_query(q, 100, 1, mysql());
     assert_eq!(
         result,
         "SELECT DISTINCT salary FROM employees ORDER BY salary DESC LIMIT 1 OFFSET 1"
@@ -569,7 +583,7 @@ fn test_build_paginated_query_preserves_user_offset() {
 #[test]
 fn test_build_paginated_query_user_offset_no_limit() {
     let q = "SELECT * FROM t ORDER BY id OFFSET 5";
-    let result = build_paginated_query(q, 100, 1);
+    let result = build_paginated_query(q, 100, 1, mysql());
     assert_eq!(result, "SELECT * FROM t ORDER BY id LIMIT 101 OFFSET 5");
 }
 
@@ -577,14 +591,14 @@ fn test_build_paginated_query_user_offset_no_limit() {
 fn test_build_paginated_query_user_offset_second_page() {
     // page offset (100) is added on top of the user's OFFSET (5).
     let q = "SELECT * FROM t ORDER BY id OFFSET 5";
-    let result = build_paginated_query(q, 100, 2);
+    let result = build_paginated_query(q, 100, 2, mysql());
     assert_eq!(result, "SELECT * FROM t ORDER BY id LIMIT 101 OFFSET 105");
 }
 
 #[test]
 fn test_build_paginated_query_subquery_with_limit() {
     let q = "SELECT * FROM (SELECT id FROM t ORDER BY id LIMIT 100) sub ORDER BY id LIMIT 5";
-    let result = build_paginated_query(q, 100, 1);
+    let result = build_paginated_query(q, 100, 1, mysql());
     assert_eq!(
         result,
         "SELECT * FROM (SELECT id FROM t ORDER BY id LIMIT 100) sub ORDER BY id LIMIT 5 OFFSET 0"
@@ -594,7 +608,7 @@ fn test_build_paginated_query_subquery_with_limit() {
 #[test]
 fn test_build_paginated_query_with_leading_comments() {
     let q = "-- header\nSELECT * FROM t ORDER BY id";
-    let result = build_paginated_query(q, 100, 1);
+    let result = build_paginated_query(q, 100, 1, mysql());
     assert_eq!(
         result,
         "-- header\nSELECT * FROM t ORDER BY id LIMIT 101 OFFSET 0"
@@ -607,7 +621,7 @@ fn test_build_paginated_query_multiline_comments_with_user_limit() {
     // appended `LIMIT … OFFSET …` lands on its own line rather than
     // being swallowed into the `--` header as comment text.
     let q = "-- ============\n-- title\n-- ============\n\nSELECT * FROM t ORDER BY id LIMIT 50";
-    let result = build_paginated_query(q, 100, 1);
+    let result = build_paginated_query(q, 100, 1, mysql());
     assert_eq!(
         result,
         "-- ============\n-- title\n-- ============\n\nSELECT * FROM t ORDER BY id LIMIT 50 OFFSET 0"
@@ -1054,5 +1068,66 @@ fn full_type_if_distinct_trims_the_kept_value() {
     assert_eq!(
         full_type_if_distinct("char", Some(" char(10) ".into())),
         Some("char(10)".into())
+    );
+}
+
+#[test]
+fn test_build_paginated_query_postgres_hash_operator_is_not_a_comment() {
+    let q = "SELECT data #>> '{a}' FROM t";
+    assert_eq!(
+        build_paginated_query(q, 100, 1, postgres()),
+        "SELECT data #>> '{a}' FROM t LIMIT 101 OFFSET 0"
+    );
+}
+
+#[test]
+fn test_build_paginated_query_postgres_hash_operator_strips_semicolon() {
+    let q = "SELECT data #>> '{a}' FROM t;";
+    assert_eq!(
+        build_paginated_query(q, 100, 1, postgres()),
+        "SELECT data #>> '{a}' FROM t LIMIT 101 OFFSET 0"
+    );
+}
+
+#[test]
+fn test_build_paginated_query_postgres_hash_operator_honors_user_limit() {
+    let q = "SELECT data #>> '{a}' FROM t LIMIT 5";
+    assert_eq!(
+        build_paginated_query(q, 100, 1, postgres()),
+        "SELECT data #>> '{a}' FROM t LIMIT 5 OFFSET 0"
+    );
+}
+
+#[test]
+fn test_build_paginated_query_postgres_dash_comment_without_space() {
+    let q = "SELECT * FROM t --note";
+    assert_eq!(
+        build_paginated_query(q, 100, 1, postgres()),
+        "SELECT * FROM t --note\nLIMIT 101 OFFSET 0"
+    );
+}
+
+#[test]
+fn test_build_paginated_query_sqlite_dash_comment_without_space() {
+    let q = "SELECT * FROM t --note";
+    assert_eq!(
+        build_paginated_query(q, 100, 1, sqlite()),
+        "SELECT * FROM t --note\nLIMIT 101 OFFSET 0"
+    );
+}
+
+#[test]
+fn test_build_paginated_query_mysql_hash_and_dash_comments_unchanged() {
+    assert_eq!(
+        build_paginated_query("SELECT * FROM t # note", 100, 1, mysql()),
+        "SELECT * FROM t # note\nLIMIT 101 OFFSET 0"
+    );
+    assert_eq!(
+        build_paginated_query("SELECT * FROM t -- note", 100, 1, mysql()),
+        "SELECT * FROM t -- note\nLIMIT 101 OFFSET 0"
+    );
+    assert_eq!(
+        build_paginated_query("SELECT 1--2", 100, 1, mysql()),
+        "SELECT 1--2 LIMIT 101 OFFSET 0"
     );
 }
