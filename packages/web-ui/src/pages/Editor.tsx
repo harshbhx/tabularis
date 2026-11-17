@@ -46,6 +46,14 @@ import {
 import {TONE_SOFT_BG_CLASS, TONE_TEXT_CLASS, tint} from '@/utils/tones';
 import {buildKeylessUpdatePlan, resolveRowIdentity} from '@/utils/rowIdentity';
 import {
+    parseJoinQuery,
+    resolveColumnSources,
+    buildJoinEditCandidates,
+    findKeylessJoinUpdates,
+    joinTargetPatch,
+    type ParsedJoinQuery,
+} from '@/utils/joinEdit';
+import {
     getTableDataChangeScope,
     isMultiDatabaseCapable,
     usesMultiDatabaseLayout,
@@ -1364,6 +1372,83 @@ export const Editor = ({commandScopeId}: EditorProps) => {
         [client, activeConnectionId, activeTabId, updateTab, activeSchema],
     );
 
+    // A JOIN result has no single table behind it. Trace each result column to
+    // the table it comes from and, when a joined table's whole primary key is in
+    // the result, let the grid edit that table's columns (#690).
+    const resolveJoinEdit = useCallback(
+        async (
+            parsed: ParsedJoinQuery,
+            result: QueryResult,
+            generation: number,
+            tabId: string,
+            tabSchema?: string,
+            tabDatabase?: string,
+        ) => {
+            if (!activeConnectionId) return;
+            const effectiveSchema = tabSchema ?? activeSchema;
+            const clear = {joinEdit: undefined, activeTable: null, pkColumns: null};
+            try {
+                const metadata = await Promise.all(
+                    parsed.tables.map((joined) =>
+                        client.call('get_columns', {
+                            connectionId: activeConnectionId,
+                            tableName: joined.table,
+                            ...(effectiveSchema ? {schema: effectiveSchema} : {}),
+                            ...(tabDatabase ? {database: tabDatabase} : {}),
+                        }),
+                    ),
+                );
+                if (queryGenerationRef.current[tabId] !== generation) return;
+                const metadataByTable = Object.fromEntries(
+                    parsed.tables.map((joined, i) => [joined.table, metadata[i]]),
+                );
+                const columnsByTable = Object.fromEntries(
+                    parsed.tables.map((joined, i) => [
+                        joined.table,
+                        metadata[i].map((c) => c.name),
+                    ]),
+                );
+                const sources = resolveColumnSources(parsed, result.columns, columnsByTable);
+                const candidates = buildJoinEditCandidates(
+                    parsed,
+                    result.columns,
+                    sources,
+                    metadataByTable,
+                );
+                updateTab(tabId, (tab) => {
+                    if (candidates.length === 0) return clear;
+                    const target =
+                        candidates.find((c) => c.table === tab.joinEdit?.target) ?? candidates[0];
+                    return {
+                        joinEdit: {candidates, target: target.table},
+                        ...joinTargetPatch(target),
+                    };
+                });
+            } catch (e) {
+                console.warn('Failed to resolve join edit targets:', e);
+                if (queryGenerationRef.current[tabId] !== generation) return;
+                updateTab(tabId, clear);
+            }
+        },
+        [client, activeConnectionId, activeSchema, updateTab],
+    );
+
+    const handleJoinTargetChange = useCallback(
+        (table: string) => {
+            const tabId = activeTabIdRef.current;
+            if (!tabId) return;
+            updateTab(tabId, (tab) => {
+                const candidate = tab.joinEdit?.candidates.find((c) => c.table === table);
+                if (!tab.joinEdit || !candidate) return {};
+                return {
+                    joinEdit: {...tab.joinEdit, target: candidate.table},
+                    ...joinTargetPatch(candidate),
+                };
+            });
+        },
+        [updateTab],
+    );
+
     const stopQuery = useCallback(async () => {
         if (!activeConnectionId) return;
         const requestIds = [...activeQueryRequestIdsRef.current];
@@ -1681,6 +1766,25 @@ export const Editor = ({commandScopeId}: EditorProps) => {
 
                     const isSameQuery = lastRunQueryRef.current[targetTabId] === textToRun;
                     lastRunQueryRef.current[targetTabId] = textToRun;
+                    // A JOIN has no single table (extractTableName gave null), but its
+                    // result may still be editable through one of the joined tables.
+                    const joinParsed =
+                        !tableName && textToRun && currentTab?.type !== 'table'
+                            ? parseJoinQuery(textToRun, schema ?? activeDatabaseName)
+                            : null;
+                    const joinParsedEditable =
+                        joinParsed &&
+                        !joinParsed.tables.some(
+                            (j) =>
+                                views.some((v) => v.name === j.table) ||
+                                materializedViews.some((v) => v.name === j.table),
+                        )
+                            ? joinParsed
+                            : null;
+                    // Re-running the same join keeps the grid editable while the
+                    // tables are looked up again.
+                    const keepJoinEdit =
+                        !!joinParsedEditable && isSameQuery && !!currentTab?.joinEdit;
                     const resultWithCount =
                         res.pagination &&
                         res.pagination.total_rows === null &&
@@ -1709,7 +1813,10 @@ export const Editor = ({commandScopeId}: EditorProps) => {
                                       result: resultWithCount,
                                       executionTime: end - start,
                                       isLoading: false,
-                                      activeTable: tableName || null,
+                                      activeTable:
+                                          tableName ||
+                                          (keepJoinEdit ? (tab.activeTable ?? null) : null),
+                                      joinEdit: keepJoinEdit ? tab.joinEdit : undefined,
                                       // A manual Refresh keeps the grid in place, but the indexes
                                       // may now point at different records, so drop the selection.
                                       ...(backgroundRefresh && tab.selectedRows?.length
@@ -1728,7 +1835,18 @@ export const Editor = ({commandScopeId}: EditorProps) => {
                                 targetTab?.database,
                             );
                         } else if (!tableName) {
-                            updateTab(targetTabId, {pkColumns: null});
+                            if (!keepJoinEdit) updateTab(targetTabId, {pkColumns: null});
+                        }
+
+                        if (joinParsedEditable) {
+                            void resolveJoinEdit(
+                                joinParsedEditable,
+                                res,
+                                generation,
+                                targetTabId,
+                                targetTab?.schema ?? undefined,
+                                targetTab?.database,
+                            );
                         }
 
                         // Automatic ticks never notify: a background window would get one on
@@ -1824,6 +1942,7 @@ export const Editor = ({commandScopeId}: EditorProps) => {
             settings.notifyLongQueries,
             settings.notifyLongQueriesThresholdSec,
             fetchPkColumn,
+            resolveJoinEdit,
             t,
             activeDriver,
             activeSchema,
@@ -4264,6 +4383,16 @@ export const Editor = ({commandScopeId}: EditorProps) => {
         }
 
         if (updates.length === 0 && deletions.length === 0 && insertions.length === 0) return;
+
+        // In a join result the other side of an outer join has no key value, so
+        // there is no row of the edited table to update.
+        if (activeTab.joinEdit && findKeylessJoinUpdates(updates).length > 0) {
+            showAlert(t('editor.joinEditKeylessRow', {table: activeTable}), {
+                title: t('common.error'),
+                kind: 'warning',
+            });
+            return;
+        }
 
         // Production safety: grid edits are writes, confirm before committing.
         if (!(await guardProductionWrite(activeConnectionId))) return;
@@ -6723,29 +6852,57 @@ export const Editor = ({commandScopeId}: EditorProps) => {
                                 {/* Data Manipulation Toolbar (Below Header) */}
                                 {showDataToolbar && (
                                     <div className="@container p-1 px-2 bg-elevated border-b border-default flex items-center gap-2 flex-wrap">
-                                        {!showResultChart && !driverReadonly && (
-                                            <div className="flex items-center gap-1">
-                                                <button
-                                                    onClick={handleNewRow}
-                                                    disabled={!!activeTab.materialized}
-                                                    className="flex items-center justify-center w-7 h-7 text-secondary hover:text-accent-success hover:bg-surface-secondary rounded transition-colors disabled:opacity-30"
-                                                    title={t('editor.newRow')}
-                                                >
-                                                    <Plus size={16} />
-                                                </button>
-                                                <button
-                                                    onClick={handleDeleteRows}
-                                                    disabled={
-                                                        !!activeTab.materialized ||
-                                                        !activeTab.selectedRows ||
-                                                        activeTab.selectedRows.length === 0
+                                        {!showResultChart &&
+                                            !driverReadonly &&
+                                            !activeTab.joinEdit && (
+                                                <div className="flex items-center gap-1">
+                                                    <button
+                                                        onClick={handleNewRow}
+                                                        disabled={!!activeTab.materialized}
+                                                        className="flex items-center justify-center w-7 h-7 text-secondary hover:text-accent-success hover:bg-surface-secondary rounded transition-colors disabled:opacity-30"
+                                                        title={t('editor.newRow')}
+                                                    >
+                                                        <Plus size={16} />
+                                                    </button>
+                                                    <button
+                                                        onClick={handleDeleteRows}
+                                                        disabled={
+                                                            !!activeTab.materialized ||
+                                                            !activeTab.selectedRows ||
+                                                            activeTab.selectedRows.length === 0
+                                                        }
+                                                        className="flex items-center justify-center w-7 h-7 text-secondary hover:text-accent-error hover:bg-surface-secondary rounded transition-colors disabled:opacity-30"
+                                                        title={t('dataGrid.deleteRow')}
+                                                    >
+                                                        <Minus size={16} />
+                                                    </button>
+                                                </div>
+                                            )}
+
+                                        {!showResultChart && activeTab.joinEdit && (
+                                            <label
+                                                className="flex items-center gap-1 text-[11px] text-secondary"
+                                                title={t('editor.joinEditTableHint')}
+                                            >
+                                                <span className="font-medium tracking-wide whitespace-nowrap">
+                                                    {t('editor.joinEditTable')}
+                                                </span>
+                                                <select
+                                                    value={activeTab.joinEdit.target}
+                                                    onChange={(e) =>
+                                                        handleJoinTargetChange(e.target.value)
                                                     }
-                                                    className="flex items-center justify-center w-7 h-7 text-secondary hover:text-accent-error hover:bg-surface-secondary rounded transition-colors disabled:opacity-30"
-                                                    title={t('dataGrid.deleteRow')}
+                                                    disabled={hasPendingChanges}
+                                                    className="bg-transparent border-none text-[11px] text-primary hover:text-primary focus:outline-none cursor-pointer appearance-none pr-3 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    style={CHEVRON_SELECT_STYLE}
                                                 >
-                                                    <Minus size={16} />
-                                                </button>
-                                            </div>
+                                                    {activeTab.joinEdit.candidates.map((c) => (
+                                                        <option key={c.table} value={c.table}>
+                                                            {c.table}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                            </label>
                                         )}
 
                                         {!showResultChart && (
@@ -6973,11 +7130,21 @@ export const Editor = ({commandScopeId}: EditorProps) => {
                                                 }
                                                 onDiscardInsertion={handleDiscardInsertion}
                                                 onRevertDeletion={handleRevertDeletion}
-                                                onMarkForDeletion={handleMarkForDeletion}
-                                                onMarkMultipleForDeletion={
-                                                    handleMarkMultipleForDeletion
+                                                onMarkForDeletion={
+                                                    activeTab.joinEdit
+                                                        ? undefined
+                                                        : handleMarkForDeletion
                                                 }
-                                                onDuplicateRow={handleDuplicateRow}
+                                                onMarkMultipleForDeletion={
+                                                    activeTab.joinEdit
+                                                        ? undefined
+                                                        : handleMarkMultipleForDeletion
+                                                }
+                                                onDuplicateRow={
+                                                    activeTab.joinEdit
+                                                        ? undefined
+                                                        : handleDuplicateRow
+                                                }
                                                 selectedRows={new Set(activeTab.selectedRows || [])}
                                                 onSelectionChange={handleSelectionChange}
                                                 copyFormat={copyFormat}

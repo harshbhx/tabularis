@@ -1,6 +1,7 @@
 import type {ForeignKey} from './schema';
 import type {GridHistory} from '@/utils/gridUndo';
 import type {LinkedFileRef} from './linkedFolders';
+import type {JoinEditCandidate} from '@/utils/joinEdit';
 
 export type {ForeignKey};
 
@@ -118,6 +119,8 @@ export interface Tab {
     nullableColumns?: string[]; // Names of nullable columns
     columnMetadata?: TableColumn[]; // Full column metadata (includes data_type for geometric types, etc.)
     foreignKeys?: ForeignKey[]; // FK definitions for the active table (used for click-to-navigate)
+    /** Set when the result of a JOIN query can be edited: the tables to pick from and the one in use (#690). */
+    joinEdit?: {candidates: JoinEditCandidate[]; target: string};
     isLoading?: boolean;
     autoRefreshIntervalMs?: AutoRefreshInterval;
     isAutoRefreshing?: boolean;
