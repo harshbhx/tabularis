@@ -1167,22 +1167,45 @@ async fn exec_on_pg_client(
         (query.to_string(), None)
     };
 
+    // Prepare first: the statement's row description already carries the table
+    // OID and attribute number of every column, so the origins are resolved
+    // before the query runs. Resolving them after reading rows would have to
+    // wait behind any rows left unread when the manual row cap stops the loop
+    // early (a `WITH ... SELECT` over a big table with a small page).
+    let statement = client
+        .prepare(&final_query)
+        .await
+        .map_err(|e| format_pg_error(&e))?;
+    let column_origins: Vec<column_origins::ColumnOrigin> = statement
+        .columns()
+        .iter()
+        .map(|c| (c.table_oid(), c.column_id()))
+        .collect();
+    let resolved_sources = if column_origins.is_empty() {
+        None
+    } else {
+        let resolved =
+            column_origins::resolve_origins(client, &column_origins::lookup_keys(&column_origins))
+                .await;
+        Some(column_origins::build_column_sources(
+            &column_origins,
+            &resolved,
+        ))
+    };
+
+    // Timing starts after the lookup so it is not counted as server or fetch time.
     let start_instant = std::time::Instant::now();
     let mut server_time_ms: Option<f64> = None;
 
     let mut columns: Vec<String> = Vec::new();
-    let mut column_origins: Vec<column_origins::ColumnOrigin> = Vec::new();
     let mut json_rows = Vec::new();
 
-    // The row stream lives only in this block. When the manual row cap breaks
-    // out early the stream still has unread rows; dropping it before the origin
-    // lookup below keeps that lookup from queueing behind them on the same client.
     {
         use futures::stream::StreamExt;
 
         let pg_params: Vec<i32> = vec![];
         let mut rows_stream = std::pin::pin!(client
-            .query_raw(&final_query, &pg_params)
+            .query_raw(&statement, &pg_params)
             .await
             .map_err(|e| format_pg_error(&e))?);
 
@@ -1194,11 +1217,6 @@ async fn exec_on_pg_client(
                 Ok(row) => {
                     if columns.is_empty() {
                         columns = row.columns().iter().map(|c| c.name().to_string()).collect();
-                        column_origins = row
-                            .columns()
-                            .iter()
-                            .map(|c| (c.table_oid(), c.column_id()))
-                            .collect();
                     }
 
                     if let Some(l) = manual_limit {
@@ -1223,18 +1241,11 @@ async fn exec_on_pg_client(
     let (server_time, fetch_time) =
         crate::drivers::common::calculate_query_timing_from_start(start_instant, server_time_ms);
 
-    // Name the tables the columns were read from (one catalog query for the
-    // whole result set). Done after the timing so it does not count as fetch time.
-    let column_sources = if column_origins.is_empty() {
+    // A result with no rows reports no columns (as before), so it has no origins either.
+    let column_sources = if columns.is_empty() {
         None
     } else {
-        let resolved =
-            column_origins::resolve_origins(client, &column_origins::lookup_keys(&column_origins))
-                .await;
-        Some(column_origins::build_column_sources(
-            &column_origins,
-            &resolved,
-        ))
+        resolved_sources
     };
 
     let pagination = if let Some((page_size, p)) = pagination_meta {

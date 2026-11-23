@@ -308,3 +308,58 @@ async fn test_execute_query_capped_cte_reports_column_sources_promptly() {
     assert_eq!(id.column, "id");
     assert_eq!(sources[1].as_ref().expect("col_text origin").column, "col_text");
 }
+
+#[tokio::test]
+#[ignore]
+async fn test_execute_query_big_cte_star_first_page_is_instant() {
+    require_pg!();
+    let params = pg_params();
+
+    // `SELECT *` out of a CTE over a large generated set, small page. The
+    // origins are resolved from the prepared statement before execution, so the
+    // call returns without waiting for the rest of the 5M rows.
+    let started = std::time::Instant::now();
+    let run = postgres::execute_query(
+        &params,
+        "WITH big AS (SELECT a.id, a.col_text, g FROM test_schema.all_types a \
+                      CROSS JOIN generate_series(1, 5000000) g) \
+         SELECT * FROM big",
+        Some(2),
+        1,
+        None,
+    );
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), run)
+        .await
+        .expect("a capped CTE over a big set must return promptly")
+        .expect("execute_query should succeed");
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+
+    assert_eq!(result.rows.len(), 2);
+    assert!(result.truncated);
+    assert_eq!(result.columns, vec!["id", "col_text", "g"]);
+    let sources = result.column_sources.expect("column_sources reported");
+    assert_eq!(sources.len(), result.columns.len());
+    assert_eq!(sources[0].as_ref().expect("id origin").table, "all_types");
+    assert_eq!(sources[1].as_ref().expect("col_text origin").column, "col_text");
+    assert!(sources[2].is_none(), "generate_series column has no origin");
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_execute_query_no_rows_has_no_columns_or_sources() {
+    require_pg!();
+    let params = pg_params();
+
+    let result = postgres::execute_query(
+        &params,
+        "SELECT id FROM test_schema.all_types WHERE false",
+        None,
+        1,
+        None,
+    )
+    .await
+    .expect("execute_query should succeed");
+    assert!(result.rows.is_empty());
+    assert!(result.columns.is_empty());
+    assert!(result.column_sources.is_none());
+}
