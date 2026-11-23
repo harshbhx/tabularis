@@ -1608,6 +1608,22 @@
     "useShownValue": "使用此值"
   },
   "dataGrid": {
+    "sourceEdit": {
+      "editable": "可编辑:会保存到表 \"{{table}}\"。此表中没有对应记录的行(外部连接)的单元格仍为只读。",
+      "reason": {
+        "unknown": "只读:数据库驱动未报告此列来自哪个表。",
+        "computed": "只读:此列是表达式或计算值,没有来源表。",
+        "noMetadata": "只读:无法加载来源表 \"{{detail}}\" 的结构。",
+        "view": "只读:\"{{detail}}\" 是视图。",
+        "ambiguous": "只读:表 \"{{detail}}\" 在此查询中出现多次,无法区分各个实例。",
+        "missingColumn": "只读:\"{{detail}}\" 不是来源表的列。",
+        "generated": "只读:\"{{detail}}\" 是生成列。",
+        "primaryKey": "只读:\"{{detail}}\" 属于用于标识行的主键。",
+        "noPrimaryKey": "只读:表 \"{{detail}}\" 没有主键。",
+        "missingKey": "只读:来源表的主键列 {{detail}} 不在结果中。",
+        "nullKey": "只读:此行在此列所属的表中没有对应的记录(外部连接的空白一侧)。"
+      }
+    },
     "jumpToColumn": "跳转到列",
     "searchColumns": "搜索列",
     "noMatchingColumns": "未找到匹配的列",

@@ -3,6 +3,7 @@ import {isZebraStripedRow, DATA_GRID_ROW_HEIGHT, type MergedRow} from '@/utils/d
 import {getFindMatchState} from '@/utils/gridFind';
 import {DataGridCell, DataGridExpansionRow} from './DataGridCell';
 import type {ForeignKey} from '@/types/editor';
+import type {CellDestination, ColumnEditState, PendingChangeTarget} from '@/utils/columnSources';
 import {
     getFormatGutterClass,
     getFormatRowClass,
@@ -19,6 +20,10 @@ export interface RowCtx {
     booleanTypeMap?: Map<string, string>;
     changeBooleanCell?: (rowIndex: number, colIndex: number, value: unknown) => void;
     tableName?: string | null;
+    /** Per-column editability of a joined result (#690); see `DataGrid`. */
+    columnEdits?: ColumnEditState[];
+    /** Where an existing row's cell writes to; null when it cannot be written. */
+    resolveCellWrite: (row: unknown[], colIndex: number) => CellDestination | null;
     generatedColumns?: Set<string> | null;
     columns: string[];
     autoIncrementColumns?: string[];
@@ -107,7 +112,12 @@ export interface RowCtx {
     onForeignKeyShowPanel?: (fk: ForeignKey, value: unknown) => void;
     onForeignKeyHidePanel?: () => void;
     onForeignKeyNavigate?: (fk: ForeignKey, value: unknown) => void;
-    onPendingChange?: (pkVal: unknown, colName: string, value: unknown) => void;
+    onPendingChange?: (
+        pkVal: unknown,
+        colName: string,
+        value: unknown,
+        target?: PendingChangeTarget,
+    ) => void;
     onPendingInsertionChange?: (tempId: string, colName: string, value: unknown) => void;
     openJsonViewerWindow: (
         value: unknown,
@@ -118,6 +128,7 @@ export interface RowCtx {
         isInsertion: boolean,
         tempId: string | undefined,
         readOnly: boolean,
+        colIndex: number,
     ) => void;
     editInputRef: React.RefObject<HTMLInputElement | null>;
 }

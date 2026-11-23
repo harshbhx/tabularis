@@ -3,14 +3,11 @@
  * and grouped paste/fill operations in the data grid before commit.
  */
 
-export type PendingChangesMap = Record<
-    string,
-    {pkOriginalValue: unknown; changes: Record<string, unknown>}
->;
+export type PendingChangesMap = Record<string, PendingRowChange>;
 
 export type PendingDeletionsMap = Record<string, unknown>;
 
-import type {PendingInsertion} from '@/types/editor';
+import type {PendingInsertion, PendingRowChange} from '@/types/editor';
 export type {PendingInsertion};
 
 export type PendingInsertionsMap = Record<string, PendingInsertion>;
@@ -85,6 +82,7 @@ export function clonePendingChanges(
             clone[key] = {
                 pkOriginalValue: entry.pkOriginalValue,
                 changes: {...entry.changes},
+                ...(entry.target ? {target: {...entry.target}} : {}),
             };
         }
     }

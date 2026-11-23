@@ -1704,6 +1704,22 @@
     "useShownValue": "Usa questo valore"
   },
   "dataGrid": {
+    "sourceEdit": {
+      "editable": "Modificabile: salvato nella tabella \"{{table}}\". Le celle delle righe senza record corrispondente in questa tabella (outer join) restano di sola lettura.",
+      "reason": {
+        "unknown": "Sola lettura: il driver del database non indica da quale tabella proviene questa colonna.",
+        "computed": "Sola lettura: questa colonna è un'espressione o un valore calcolato, quindi non ha una tabella di origine.",
+        "noMetadata": "Sola lettura: impossibile caricare la struttura della tabella di origine \"{{detail}}\".",
+        "view": "Sola lettura: \"{{detail}}\" è una vista.",
+        "ambiguous": "Sola lettura: la tabella \"{{detail}}\" compare più volte in questa query e le sue istanze non si possono distinguere.",
+        "missingColumn": "Sola lettura: \"{{detail}}\" non è una colonna della tabella di origine.",
+        "generated": "Sola lettura: \"{{detail}}\" è una colonna generata.",
+        "primaryKey": "Sola lettura: \"{{detail}}\" fa parte della chiave primaria, che identifica la riga.",
+        "noPrimaryKey": "Sola lettura: la tabella \"{{detail}}\" non ha una chiave primaria.",
+        "missingKey": "Sola lettura: le colonne della chiave primaria {{detail}} della tabella di origine non sono nel risultato.",
+        "nullKey": "Sola lettura: questa riga non ha un record corrispondente nella tabella di questa colonna (lato vuoto di un outer join)."
+      }
+    },
     "jumpToColumn": "Vai alla colonna",
     "searchColumns": "Cerca colonne",
     "noMatchingColumns": "Nessuna colonna corrispondente",

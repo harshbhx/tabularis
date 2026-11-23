@@ -1697,6 +1697,22 @@
         "useShownValue": "使用此值"
     },
     "dataGrid": {
+        "sourceEdit": {
+            "editable": "可編輯:會儲存到資料表 \"{{table}}\"。此資料表中沒有對應記錄的資料列(外部連接)的儲存格仍為唯讀。",
+            "reason": {
+                "unknown": "唯讀:資料庫驅動程式未回報此欄位來自哪個資料表。",
+                "computed": "唯讀:此欄位為運算式或計算值,沒有來源資料表。",
+                "noMetadata": "唯讀:無法載入來源資料表 \"{{detail}}\" 的結構。",
+                "view": "唯讀:\"{{detail}}\" 是檢視表。",
+                "ambiguous": "唯讀:資料表 \"{{detail}}\" 在此查詢中出現多次,無法區分各個實例。",
+                "missingColumn": "唯讀:\"{{detail}}\" 不是來源資料表的欄位。",
+                "generated": "唯讀:\"{{detail}}\" 是產生欄位。",
+                "primaryKey": "唯讀:\"{{detail}}\" 屬於用來識別資料列的主鍵。",
+                "noPrimaryKey": "唯讀:資料表 \"{{detail}}\" 沒有主鍵。",
+                "missingKey": "唯讀:來源資料表的主鍵欄位 {{detail}} 不在結果中。",
+                "nullKey": "唯讀:此資料列在此欄位的資料表中沒有對應的記錄(外部連接的空白一側)。"
+            }
+        },
         "columnVisibility": {
             "hideColumn": "隱藏欄位",
             "hideColumns_one": "隱藏 {{count}} 個欄位",

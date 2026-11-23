@@ -1675,6 +1675,22 @@
     "useShownValue": "Utiliser cette valeur"
   },
   "dataGrid": {
+    "sourceEdit": {
+      "editable": "Modifiable : enregistré dans la table \"{{table}}\". Les cellules des lignes sans enregistrement correspondant dans cette table (jointure externe) restent en lecture seule.",
+      "reason": {
+        "unknown": "Lecture seule : le pilote de la base de données n'indique pas de quelle table provient cette colonne.",
+        "computed": "Lecture seule : cette colonne est une expression ou une valeur calculée, elle n'a donc pas de table source.",
+        "noMetadata": "Lecture seule : la structure de sa table source \"{{detail}}\" n'a pas pu être chargée.",
+        "view": "Lecture seule : \"{{detail}}\" est une vue.",
+        "ambiguous": "Lecture seule : la table \"{{detail}}\" apparaît plusieurs fois dans cette requête et ses occurrences ne peuvent pas être distinguées.",
+        "missingColumn": "Lecture seule : \"{{detail}}\" n'est pas une colonne de sa table source.",
+        "generated": "Lecture seule : \"{{detail}}\" est une colonne générée.",
+        "primaryKey": "Lecture seule : \"{{detail}}\" fait partie de la clé primaire, qui identifie la ligne.",
+        "noPrimaryKey": "Lecture seule : la table \"{{detail}}\" n'a pas de clé primaire.",
+        "missingKey": "Lecture seule : les colonnes de clé primaire {{detail}} de sa table source ne sont pas dans le résultat.",
+        "nullKey": "Lecture seule : cette ligne n'a pas d'enregistrement correspondant dans la table de cette colonne (côté vide d'une jointure externe)."
+      }
+    },
     "jumpToColumn": "Aller à la colonne",
     "searchColumns": "Rechercher des colonnes",
     "noMatchingColumns": "Aucune colonne correspondante",

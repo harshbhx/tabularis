@@ -32,6 +32,14 @@ import {
 } from '@/utils/resultExport';
 import {serializePkKey, buildPkMap} from '@/utils/dataGrid';
 import {
+    hasColumnSources,
+    listSourceTables,
+    resolveColumnEdits,
+    type ColumnEditState,
+    type PendingChangeTarget,
+    type SourceTableMeta,
+} from '@/utils/columnSources';
+import {
     createGridHistory,
     recordGridEdit,
     undoGridEdit,
@@ -194,6 +202,7 @@ import {
     type ResultsCopyPayload,
     type ResultsWindowActionHandlers,
 } from '@/utils/resultsWindowSync';
+import type {ColumnSource} from '@/types/plugins';
 import type {
     ResultsSessionAction,
     ResultsSessionClosed,
@@ -1135,6 +1144,20 @@ export const Editor = ({commandScopeId}: EditorProps) => {
         [activeTab?.pkColumns, activeTab?.columnMetadata, activeTab?.result?.columns],
     );
 
+    // A result with no single table to edit, but whose driver reports where
+    // each column comes from (#690): per-column editability through the source
+    // tables. Single-table results keep the `activeTable` path above.
+    const columnEdits = useMemo((): ColumnEditState[] | undefined => {
+        const result = activeTab?.result;
+        if (!result || activeTab?.activeTable) return undefined;
+        if (!hasColumnSources(result.column_sources, result.columns.length)) return undefined;
+        return resolveColumnEdits(
+            result.columns,
+            result.column_sources,
+            activeTab?.sourceTables ?? {},
+        );
+    }, [activeTab?.result, activeTab?.activeTable, activeTab?.sourceTables]);
+
     const selectionHasPending = useMemo(() => {
         if (!activeTab) return false;
         const {pendingChanges, pendingDeletions, pendingInsertions, selectedRows, result} =
@@ -1145,7 +1168,8 @@ export const Editor = ({commandScopeId}: EditorProps) => {
             (pendingDeletions && Object.keys(pendingDeletions).length > 0) ||
             (pendingInsertions && Object.keys(pendingInsertions).length > 0);
 
-        if (!selectedRows || selectedRows.length === 0) return hasGlobalPending;
+        // A joined result (#690) submits and rolls back every staged edit at once.
+        if (!selectedRows || selectedRows.length === 0 || columnEdits) return hasGlobalPending;
 
         const existingRowCount = result?.rows.length || 0;
 
@@ -1169,7 +1193,7 @@ export const Editor = ({commandScopeId}: EditorProps) => {
                 (pendingDeletions && pendingDeletions[pkKey])
             );
         });
-    }, [activeTab, rowIdentity]);
+    }, [activeTab, rowIdentity, columnEdits]);
 
     const hasPendingChanges = useMemo(() => {
         return (
@@ -1191,7 +1215,9 @@ export const Editor = ({commandScopeId}: EditorProps) => {
     // Row and copy actions act on the grid, so Chart view leaves them out. It keeps the
     // pending-changes bar while there is something to submit or roll back.
     const showDataToolbar =
-        !!activeTab?.activeTable && !!activeTab.result && (!showResultChart || hasPendingChanges);
+        (!!activeTab?.activeTable || !!columnEdits) &&
+        !!activeTab?.result &&
+        (!showResultChart || hasPendingChanges);
 
     useLayoutEffect(() => {
         tabsRef.current = tabs;
@@ -1362,6 +1388,49 @@ export const Editor = ({commandScopeId}: EditorProps) => {
             }
         },
         [client, activeConnectionId, activeTabId, updateTab, activeSchema],
+    );
+
+    // Loads the metadata of the tables a result's `column_sources` point at
+    // (#690), through the same `get_columns` RPC the single-table path uses.
+    // Views are recorded without a lookup: they are never written through.
+    const fetchSourceTables = useCallback(
+        async (
+            sources: ReadonlyArray<ColumnSource | null>,
+            generation: number,
+            tabId: string,
+            tabSchema?: string,
+            tabDatabase?: string,
+        ) => {
+            if (!activeConnectionId) return;
+            const refs = listSourceTables(sources);
+            const entries = await Promise.all(
+                refs.map(async (ref): Promise<[string, SourceTableMeta | null]> => {
+                    if (
+                        views.some((v) => v.name === ref.table) ||
+                        materializedViews.some((v) => v.name === ref.table)
+                    ) {
+                        return [ref.key, {columns: [], isView: true}];
+                    }
+                    const schema = ref.schema ?? tabSchema ?? activeSchema;
+                    try {
+                        const columns = await client.call('get_columns', {
+                            connectionId: activeConnectionId,
+                            tableName: ref.table,
+                            ...(schema ? {schema} : {}),
+                            ...(tabDatabase ? {database: tabDatabase} : {}),
+                        });
+                        return [ref.key, {columns, isView: false}];
+                    } catch (e) {
+                        console.warn('Failed to fetch source table columns:', e);
+                        return [ref.key, null];
+                    }
+                }),
+            );
+            // A newer run on this tab owns the metadata now.
+            if (queryGenerationRef.current[tabId] !== generation) return;
+            updateTab(tabId, {sourceTables: Object.fromEntries(entries)});
+        },
+        [client, activeConnectionId, activeSchema, views, materializedViews, updateTab],
     );
 
     const stopQuery = useCallback(async () => {
@@ -1729,6 +1798,23 @@ export const Editor = ({commandScopeId}: EditorProps) => {
                             );
                         } else if (!tableName) {
                             updateTab(targetTabId, {pkColumns: null});
+                            // No single table, but the driver may report where each
+                            // column comes from (#690): load those tables so columns
+                            // of a join can be edited through their own table.
+                            if (
+                                !backgroundRefresh &&
+                                hasColumnSources(res.column_sources, res.columns.length)
+                            ) {
+                                void fetchSourceTables(
+                                    res.column_sources ?? [],
+                                    generation,
+                                    targetTabId,
+                                    targetTab?.schema ?? undefined,
+                                    targetTab?.database,
+                                );
+                            } else if (!backgroundRefresh) {
+                                updateTab(targetTabId, {sourceTables: undefined});
+                            }
                         }
 
                         // Automatic ticks never notify: a background window would get one on
@@ -1824,6 +1910,7 @@ export const Editor = ({commandScopeId}: EditorProps) => {
             settings.notifyLongQueries,
             settings.notifyLongQueriesThresholdSec,
             fetchPkColumn,
+            fetchSourceTables,
             t,
             activeDriver,
             activeSchema,
@@ -3543,7 +3630,7 @@ export const Editor = ({commandScopeId}: EditorProps) => {
     }, [updateTab]);
 
     const handlePendingChange = useCallback(
-        (pkVal: unknown, colName: string, value: unknown) => {
+        (pkVal: unknown, colName: string, value: unknown, target?: PendingChangeTarget) => {
             if (!activeTabIdRef.current) return;
             const tabId = activeTabIdRef.current;
             const isBatching = isBatchingGridEditRef.current;
@@ -3551,11 +3638,21 @@ export const Editor = ({commandScopeId}: EditorProps) => {
             // Functional update: rapid successive calls (e.g. a multi-cell paste)
             // must each see the previous call's result, not a stale snapshot.
             updateTab(tabId, (currentTab) => {
-                const pkKey = serializePkKey(pkVal as Record<string, unknown>);
+                // A cell of a joined result is staged under its source table's row
+                // (#690), so every copy of that row in the result shares one entry.
+                const pkKey = target?.key ?? serializePkKey(pkVal as Record<string, unknown>);
                 const currentPending = currentTab.pendingChanges || {};
                 const rowEntry = currentPending[pkKey] || {
                     pkOriginalValue: pkVal,
                     changes: {},
+                    ...(target
+                        ? {
+                              target: {
+                                  ...(target.schema ? {schema: target.schema} : {}),
+                                  table: target.table,
+                              },
+                          }
+                        : {}),
                 };
 
                 // Create new changes object
@@ -4149,22 +4246,35 @@ export const Editor = ({commandScopeId}: EditorProps) => {
     ]);
 
     const handleSubmitChanges = useCallback(async () => {
-        if (!activeTab || !activeTab.activeTable || !activeConnectionId) return;
+        if (!activeTab || (!activeTab.activeTable && !columnEdits) || !activeConnectionId) return;
 
-        const {pendingChanges, pendingDeletions, pendingInsertions, activeTable, selectedRows} =
-            activeTab;
+        const {pendingChanges, pendingDeletions, pendingInsertions, selectedRows} = activeTab;
+        // Empty only for a joined result, which writes through each change's own table.
+        const activeTable = activeTab.activeTable ?? '';
 
+        // A joined result (#690) stages edits per source table and writes each
+        // through that table's primary key; it has no row identity of its own.
+        const isSourceEdit = !!columnEdits;
         // A row identity is required for updates/deletions but not for
         // insertions-only. Keyless tables fall back to all-columns identity.
-        const pkColumns = rowIdentity?.columns ?? null;
+        const pkColumns = isSourceEdit ? null : (rowIdentity?.columns ?? null);
         const hasPkColumns = !!(pkColumns && pkColumns.length > 0);
-        const isKeyless = rowIdentity?.isKeyless ?? false;
-        const updates: {pkVal: Record<string, unknown>; colName: string; newVal: unknown}[] = [];
+        const isKeyless = isSourceEdit ? false : (rowIdentity?.isKeyless ?? false);
+        const updates: {
+            pkVal: Record<string, unknown>;
+            colName: string;
+            newVal: unknown;
+            /** Key of the row in `pendingChanges` (differs from the PK key for a joined result). */
+            key?: string;
+            target?: {schema?: string; table: string};
+        }[] = [];
         const deletions: Record<string, unknown>[] = [];
         const insertions: {tempId: string; data: Record<string, unknown>}[] = [];
 
-        // Filter pending changes by selected rows IF there is a selection AND applyToAll is false
-        const hasSelection = !applyToAll && selectedRows && selectedRows.length > 0;
+        // Filter pending changes by selected rows IF there is a selection AND applyToAll is false.
+        // A joined result submits everything: its rows are not keyed by one table.
+        const hasSelection =
+            !isSourceEdit && !applyToAll && selectedRows && selectedRows.length > 0;
         const selectedPkSet = new Set<string>();
 
         if (hasSelection && activeTab.result && hasPkColumns && pkColumns) {
@@ -4175,6 +4285,21 @@ export const Editor = ({commandScopeId}: EditorProps) => {
                     if (row)
                         selectedPkSet.add(serializePkKey(buildPkMap(pkColumns, row, pkIndices)));
                 });
+            }
+        }
+
+        if (isSourceEdit && pendingChanges) {
+            for (const [key, rowData] of Object.entries(pendingChanges)) {
+                if (!rowData.target) continue;
+                for (const [colName, newVal] of Object.entries(rowData.changes)) {
+                    updates.push({
+                        pkVal: rowData.pkOriginalValue as Record<string, unknown>,
+                        colName,
+                        newVal,
+                        key,
+                        target: rowData.target,
+                    });
+                }
             }
         }
 
@@ -4387,11 +4512,19 @@ export const Editor = ({commandScopeId}: EditorProps) => {
                         ...updates.map((u) =>
                             client.call('update_record', {
                                 connectionId: activeConnectionId,
-                                table: activeTable,
+                                // A joined result writes each edit to its own source table
+                                table: u.target?.table ?? activeTable,
                                 pkMap: u.pkVal,
                                 colName: u.colName,
                                 newVal: u.newVal,
-                                ...dataChangeScope,
+                                ...(u.target
+                                    ? getTableDataChangeScope(
+                                          activeCapabilities,
+                                          u.target.schema ?? activeTab?.schema,
+                                          activeSchema,
+                                          activeTab?.database,
+                                      )
+                                    : dataChangeScope),
                             }),
                         ),
                     );
@@ -4420,7 +4553,7 @@ export const Editor = ({commandScopeId}: EditorProps) => {
             const newPendingInsertions = {...(pendingInsertions || {})};
 
             // Partial cleanup - remove only processed changes
-            updates.forEach((u) => delete newPendingChanges[serializePkKey(u.pkVal)]);
+            updates.forEach((u) => delete newPendingChanges[u.key ?? serializePkKey(u.pkVal)]);
             deletions.forEach(
                 (d) => delete newPendingDeletions[serializePkKey(d as Record<string, unknown>)],
             );
@@ -4479,6 +4612,7 @@ export const Editor = ({commandScopeId}: EditorProps) => {
         activeCapabilities,
         showAlert,
         rowIdentity,
+        columnEdits,
         guardProductionWrite,
     ]);
 
@@ -4673,7 +4807,7 @@ export const Editor = ({commandScopeId}: EditorProps) => {
         const pkColumns = rowIdentity?.columns ?? null;
 
         // If applyToAll is true OR no selection, rollback everything
-        if (applyToAll || !selectedRows || selectedRows.length === 0) {
+        if (applyToAll || !selectedRows || selectedRows.length === 0 || columnEdits) {
             const beforeSnap: GridPendingSnapshot = {
                 pendingChanges,
                 pendingDeletions,
@@ -4769,7 +4903,7 @@ export const Editor = ({commandScopeId}: EditorProps) => {
             pendingInsertions: nextPendingInsertions,
             gridHistory: nextGridHistory,
         });
-    }, [activeTab, updateActiveTab, applyToAll, rowIdentity]);
+    }, [activeTab, updateActiveTab, applyToAll, rowIdentity, columnEdits]);
 
     const handleEditorMount = (editor: Parameters<OnMount>[0], monaco: Monaco, tabId: string) => {
         editorsRef.current[tabId] = editor;
@@ -6723,7 +6857,7 @@ export const Editor = ({commandScopeId}: EditorProps) => {
                                 {/* Data Manipulation Toolbar (Below Header) */}
                                 {showDataToolbar && (
                                     <div className="@container p-1 px-2 bg-elevated border-b border-default flex items-center gap-2 flex-wrap">
-                                        {!showResultChart && !driverReadonly && (
+                                        {!showResultChart && !driverReadonly && !columnEdits && (
                                             <div className="flex items-center gap-1">
                                                 <button
                                                     onClick={handleNewRow}
@@ -6748,7 +6882,7 @@ export const Editor = ({commandScopeId}: EditorProps) => {
                                             </div>
                                         )}
 
-                                        {!showResultChart && (
+                                        {!showResultChart && !columnEdits && (
                                             <div className="w-[1px] h-4 bg-surface-secondary mx-1"></div>
                                         )}
 
@@ -6938,14 +7072,34 @@ export const Editor = ({commandScopeId}: EditorProps) => {
                                                 columns={activeTab.result?.columns || []}
                                                 data={activeTab.result?.rows || []}
                                                 tableName={activeTab.activeTable}
-                                                pkColumns={rowIdentity?.columns ?? null}
-                                                autoIncrementColumns={
-                                                    activeTab.autoIncrementColumns
+                                                pkColumns={
+                                                    columnEdits
+                                                        ? null
+                                                        : (rowIdentity?.columns ?? null)
                                                 }
-                                                defaultValueColumns={activeTab.defaultValueColumns}
-                                                nullableColumns={activeTab.nullableColumns}
-                                                columnMetadata={activeTab.columnMetadata}
-                                                foreignKeys={activeTab.foreignKeys}
+                                                autoIncrementColumns={
+                                                    columnEdits
+                                                        ? undefined
+                                                        : activeTab.autoIncrementColumns
+                                                }
+                                                defaultValueColumns={
+                                                    columnEdits
+                                                        ? undefined
+                                                        : activeTab.defaultValueColumns
+                                                }
+                                                nullableColumns={
+                                                    columnEdits
+                                                        ? undefined
+                                                        : activeTab.nullableColumns
+                                                }
+                                                columnMetadata={
+                                                    columnEdits
+                                                        ? undefined
+                                                        : activeTab.columnMetadata
+                                                }
+                                                foreignKeys={
+                                                    columnEdits ? undefined : activeTab.foreignKeys
+                                                }
                                                 onForeignKeyNavigate={handleForeignKeyNavigate}
                                                 onForeignKeyShowPanel={handleForeignKeyShowPanel}
                                                 onForeignKeyHidePanel={() => setActiveFkQuery(null)}
@@ -6968,6 +7122,7 @@ export const Editor = ({commandScopeId}: EditorProps) => {
                                                 pendingDeletions={activeTab.pendingDeletions}
                                                 pendingInsertions={activeTab.pendingInsertions}
                                                 onPendingChange={handlePendingChange}
+                                                columnEdits={columnEdits}
                                                 onPendingInsertionChange={
                                                     handlePendingInsertionChange
                                                 }

@@ -1637,6 +1637,22 @@
     "useShownValue": "Diesen Wert verwenden"
   },
   "dataGrid": {
+    "sourceEdit": {
+      "editable": "Bearbeitbar: wird in Tabelle \"{{table}}\". gespeichert Zellen in Zeilen ohne passenden Datensatz in dieser Tabelle (Outer Join) bleiben schreibgeschützt.",
+      "reason": {
+        "unknown": "Schreibgeschützt: Der Datenbanktreiber meldet nicht, aus welcher Tabelle diese Spalte stammt.",
+        "computed": "Schreibgeschützt: Diese Spalte ist ein Ausdruck oder berechneter Wert und hat keine Quelltabelle.",
+        "noMetadata": "Schreibgeschützt: Die Struktur der Quelltabelle \"{{detail}}\" konnte nicht geladen werden.",
+        "view": "Schreibgeschützt: \"{{detail}}\" ist eine View.",
+        "ambiguous": "Schreibgeschützt: Die Tabelle \"{{detail}}\" kommt in dieser Abfrage mehrfach vor und die Instanzen lassen sich nicht unterscheiden.",
+        "missingColumn": "Schreibgeschützt: \"{{detail}}\" ist keine Spalte der Quelltabelle.",
+        "generated": "Schreibgeschützt: \"{{detail}}\" ist eine generierte Spalte.",
+        "primaryKey": "Schreibgeschützt: \"{{detail}}\" gehört zum Primärschlüssel, der die Zeile identifiziert.",
+        "noPrimaryKey": "Schreibgeschützt: Die Tabelle \"{{detail}}\" hat keinen Primärschlüssel.",
+        "missingKey": "Schreibgeschützt: Die Primärschlüsselspalte(n) {{detail}} der Quelltabelle fehlen im Ergebnis.",
+        "nullKey": "Schreibgeschützt: Diese Zeile hat keinen passenden Datensatz in der Tabelle dieser Spalte (leere Seite eines Outer Joins)."
+      }
+    },
     "jumpToColumn": "Zu Spalte springen",
     "searchColumns": "Spalten suchen",
     "noMatchingColumns": "Keine passenden Spalten",

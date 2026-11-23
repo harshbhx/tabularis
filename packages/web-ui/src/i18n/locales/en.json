@@ -1708,6 +1708,22 @@
     "useShownValue": "Use this value"
   },
   "dataGrid": {
+    "sourceEdit": {
+      "editable": "Editable: saved to table \"{{table}}\". Cells on rows with no matching record in this table (outer join) stay read-only.",
+      "reason": {
+        "unknown": "Read-only: the database driver does not report which table this column comes from.",
+        "computed": "Read-only: this column is an expression or computed value, so it has no source table.",
+        "noMetadata": "Read-only: the structure of its source table \"{{detail}}\" could not be loaded.",
+        "view": "Read-only: \"{{detail}}\" is a view.",
+        "ambiguous": "Read-only: table \"{{detail}}\" appears more than once in this query and its copies cannot be told apart.",
+        "missingColumn": "Read-only: \"{{detail}}\" is not a column of its source table.",
+        "generated": "Read-only: \"{{detail}}\" is a generated column.",
+        "primaryKey": "Read-only: \"{{detail}}\" is part of the primary key, which identifies the row.",
+        "noPrimaryKey": "Read-only: table \"{{detail}}\" has no primary key.",
+        "missingKey": "Read-only: the primary key column(s) {{detail}} of its source table are not in the result.",
+        "nullKey": "Read-only: this row has no matching record in this column's table (empty side of an outer join)."
+      }
+    },
     "jumpToColumn": "Jump to column",
     "searchColumns": "Search columns",
     "noMatchingColumns": "No matching columns",

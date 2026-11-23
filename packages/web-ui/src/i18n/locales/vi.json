@@ -1691,6 +1691,22 @@
     "useShownValue": "Dùng giá trị này"
   },
   "dataGrid": {
+    "sourceEdit": {
+      "editable": "Có thể chỉnh sửa: được lưu vào bảng \"{{table}}\". Các ô ở dòng không có bản ghi tương ứng trong bảng này (outer join) vẫn chỉ đọc.",
+      "reason": {
+        "unknown": "Chỉ đọc: trình điều khiển cơ sở dữ liệu không cho biết cột này đến từ bảng nào.",
+        "computed": "Chỉ đọc: cột này là biểu thức hoặc giá trị tính toán nên không có bảng nguồn.",
+        "noMetadata": "Chỉ đọc: không thể tải cấu trúc của bảng nguồn \"{{detail}}\".",
+        "view": "Chỉ đọc: \"{{detail}}\" là một view.",
+        "ambiguous": "Chỉ đọc: bảng \"{{detail}}\" xuất hiện nhiều lần trong truy vấn này và không thể phân biệt các bản.",
+        "missingColumn": "Chỉ đọc: \"{{detail}}\" không phải là cột của bảng nguồn.",
+        "generated": "Chỉ đọc: \"{{detail}}\" là cột được tạo tự động.",
+        "primaryKey": "Chỉ đọc: \"{{detail}}\" thuộc khóa chính, dùng để xác định dòng.",
+        "noPrimaryKey": "Chỉ đọc: bảng \"{{detail}}\" không có khóa chính.",
+        "missingKey": "Chỉ đọc: các cột khóa chính {{detail}} của bảng nguồn không có trong kết quả.",
+        "nullKey": "Chỉ đọc: dòng này không có bản ghi tương ứng trong bảng của cột này (phía trống của outer join)."
+      }
+    },
     "jumpToColumn": "Nhảy tới cột",
     "searchColumns": "Tìm cột",
     "noMatchingColumns": "Không có cột nào khớp",

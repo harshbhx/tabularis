@@ -1667,6 +1667,22 @@
     "useShownValue": "Gamitin ang value na ito"
   },
   "dataGrid": {
+    "sourceEdit": {
+      "editable": "Maaaring i-edit: sine-save sa table na \"{{table}}\". Read-only pa rin ang mga cell ng row na walang katugmang record sa table na ito (outer join).",
+      "reason": {
+        "unknown": "Read-only: hindi sinasabi ng database driver kung saang table galing ang column na ito.",
+        "computed": "Read-only: ang column na ito ay expression o kinalkulang value, kaya walang source table.",
+        "noMetadata": "Read-only: hindi na-load ang istruktura ng source table nito na \"{{detail}}\".",
+        "view": "Read-only: ang \"{{detail}}\" ay isang view.",
+        "ambiguous": "Read-only: ang table na \"{{detail}}\" ay lumilitaw nang higit sa isang beses sa query na ito at hindi mapag-iba ang mga kopya.",
+        "missingColumn": "Read-only: ang \"{{detail}}\" ay hindi column ng source table nito.",
+        "generated": "Read-only: ang \"{{detail}}\" ay generated column.",
+        "primaryKey": "Read-only: ang \"{{detail}}\" ay bahagi ng primary key na tumutukoy sa row.",
+        "noPrimaryKey": "Read-only: walang primary key ang table na \"{{detail}}\".",
+        "missingKey": "Read-only: wala sa resulta ang mga primary key column na {{detail}} ng source table nito.",
+        "nullKey": "Read-only: walang katugmang record ang row na ito sa table ng column na ito (walang laman na bahagi ng outer join)."
+      }
+    },
     "jumpToColumn": "Pumunta sa kolum",
     "searchColumns": "Maghanap ng mga kolum",
     "noMatchingColumns": "Walang katugmang kolum",

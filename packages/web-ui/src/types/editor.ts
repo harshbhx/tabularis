@@ -2,6 +2,7 @@ import type {ForeignKey} from './schema';
 import type {ColumnSource} from './plugins';
 import type {GridHistory} from '@/utils/gridUndo';
 import type {LinkedFileRef} from './linkedFolders';
+import type {SourceTableMeta} from '@/utils/columnSources';
 
 export type {ForeignKey};
 
@@ -100,6 +101,16 @@ export interface FlowState {
     edges: Edge[];
 }
 
+/// Staged edits to one row, keyed in `Tab.pendingChanges`. `target` names the
+/// table the row belongs to when the result is a join whose columns edit
+/// through their own source tables (#690); it is absent for a single-table
+/// grid, which writes to `Tab.activeTable`.
+export interface PendingRowChange {
+    pkOriginalValue: unknown;
+    changes: Record<string, unknown>;
+    target?: {schema?: string; table: string};
+}
+
 export interface PendingInsertion {
     tempId: string;
     data: Record<string, unknown>;
@@ -124,13 +135,15 @@ export interface Tab {
     nullableColumns?: string[]; // Names of nullable columns
     columnMetadata?: TableColumn[]; // Full column metadata (includes data_type for geometric types, etc.)
     foreignKeys?: ForeignKey[]; // FK definitions for the active table (used for click-to-navigate)
+    /** Metadata of the tables a result's `column_sources` point at, keyed by `sourceTableKey`. `null` = could not be loaded. */
+    sourceTables?: Record<string, SourceTableMeta | null>;
     isLoading?: boolean;
     autoRefreshIntervalMs?: AutoRefreshInterval;
     isAutoRefreshing?: boolean;
     autoRefreshError?: string;
     connectionId: string;
     flowState?: FlowState;
-    pendingChanges?: Record<string, {pkOriginalValue: unknown; changes: Record<string, unknown>}>;
+    pendingChanges?: Record<string, PendingRowChange>;
     gridHistory?: GridHistory;
     pendingDeletions?: Record<string, unknown>; // Map of stringified PK -> original PK value
     pendingInsertions?: Record<string, PendingInsertion>; // Map of tempId -> pending insertion

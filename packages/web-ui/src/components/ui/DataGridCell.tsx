@@ -2,6 +2,7 @@ import React from 'react';
 import {booleanEditValue, parseBooleanValue} from '@/utils/boolean';
 import {BooleanInput} from './BooleanInput';
 import {ExternalLink, Eye, EyeOff} from 'lucide-react';
+import {stageCellChange} from '@/utils/columnSources';
 import {MASKED_PLACEHOLDER} from '@/utils/columnMasking';
 import {
     formatCellValue,
@@ -156,9 +157,22 @@ export function DataGridCell({
         nullableColumns,
     };
 
+    // Joined result (#690): a cell is staged under its source table's row key
+    // and column name, so every copy of that row shows the same pending value.
+    const sourceWrite =
+        ctx.columnEdits && !isInsertion ? ctx.resolveCellWrite(rowOriginal, colIndex) : null;
+
     const resolved = isInsertion
         ? resolveInsertionCellDisplay(cellValue, columnInfo)
-        : resolveExistingCellDisplay(cellValue, pkVal, pkColumns, pendingChanges, columnInfo);
+        : ctx.columnEdits
+          ? resolveExistingCellDisplay(
+                cellValue,
+                sourceWrite?.target?.key ?? null,
+                sourceWrite ? [sourceWrite.colName] : null,
+                pendingChanges,
+                {...columnInfo, colName: sourceWrite?.colName ?? colName},
+            )
+          : resolveExistingCellDisplay(cellValue, pkVal, pkColumns, pendingChanges, columnInfo);
 
     const {
         displayValue,
@@ -173,13 +187,15 @@ export function DataGridCell({
     const isBooleanCell =
         booleanType !== undefined || (!colTypeForCell && typeof displayValue === 'boolean');
     const booleanValue = isBooleanCell ? parseBooleanValue(displayValue) : undefined;
-    const booleanDisabled = !!(
-        readonlyProp ||
-        !ctx.tableName ||
-        isPendingDelete ||
-        (!isInsertion && !pkColumns?.length) ||
-        ctx.generatedColumns?.has(colName.toLowerCase())
-    );
+    const booleanDisabled = ctx.columnEdits
+        ? !!(readonlyProp || isPendingDelete || isInsertion || !sourceWrite)
+        : !!(
+              readonlyProp ||
+              !ctx.tableName ||
+              isPendingDelete ||
+              (!isInsertion && !pkColumns?.length) ||
+              ctx.generatedColumns?.has(colName.toLowerCase())
+          );
     const rawCellValue = cellValue;
     const isJsonCell = isJsonCellTarget(colTypeForCell, rawCellValue) && !isPendingDelete;
     const isLongTextCell =
@@ -559,6 +575,7 @@ export function DataGridCell({
                                             isInsertion,
                                             mergedRow.tempId,
                                             readonlyProp ?? false,
+                                            colIndex,
                                         );
                                     }}
                                 />
@@ -712,6 +729,8 @@ export function DataGridExpansionRow({
         pendingChanges,
         parentViewportWidth,
         readonly: readonlyProp,
+        columnEdits,
+        resolveCellWrite,
         setExpandedCell,
         onPendingChange,
         onPendingInsertionChange,
@@ -719,9 +738,20 @@ export function DataGridExpansionRow({
 
     const expColName = columns[expandedCell.colIndex];
     const mergedRow = mergedRows[rowIndex];
+    // Joined result (#690): the cell's source table decides where it writes
+    // and whether it can be written at all.
+    const sourceWrite =
+        columnEdits && mergedRow?.type === 'existing'
+            ? resolveCellWrite(mergedRow.rowData, expandedCell.colIndex)
+            : null;
     const pendingExpansionValue = (() => {
         if (!mergedRow) return undefined;
-        if (mergedRow.type === 'existing' && pkIndexMaps.length > 0 && pkColumns) {
+        if (columnEdits) {
+            const pendingVal = sourceWrite?.target
+                ? pendingChanges?.[sourceWrite.target.key]?.changes?.[sourceWrite.colName]
+                : undefined;
+            if (pendingVal !== undefined) return pendingVal;
+        } else if (mergedRow.type === 'existing' && pkIndexMaps.length > 0 && pkColumns) {
             const pkMapVal = buildPkMap(pkColumns, mergedRow.rowData, pkIndexMaps);
             const pkKeyStr = serializePkKey(pkMapVal);
             const pendingVal = pendingChanges?.[pkKeyStr]?.changes?.[expColName];
@@ -735,6 +765,10 @@ export function DataGridExpansionRow({
         if (!mergedRow) return;
         if (mergedRow.type === 'insertion' && onPendingInsertionChange && mergedRow.tempId) {
             onPendingInsertionChange(mergedRow.tempId, expColName, next);
+        } else if (columnEdits) {
+            if (sourceWrite && onPendingChange) {
+                stageCellChange(onPendingChange, sourceWrite, next);
+            }
         } else if (
             mergedRow.type === 'existing' &&
             onPendingChange &&
@@ -759,7 +793,7 @@ export function DataGridExpansionRow({
                         <JsonExpansionEditor
                             value={pendingExpansionValue}
                             originalValue={expansionOriginalValue}
-                            readOnly={readonlyProp ?? false}
+                            readOnly={(readonlyProp ?? false) || (!!columnEdits && !sourceWrite)}
                             onCancel={() => setExpandedCell(null)}
                             onSave={persistExpansionSave}
                         />
@@ -767,7 +801,7 @@ export function DataGridExpansionRow({
                         <TextExpansionEditor
                             value={pendingExpansionValue}
                             originalValue={expansionOriginalValue}
-                            readOnly={readonlyProp ?? false}
+                            readOnly={(readonlyProp ?? false) || (!!columnEdits && !sourceWrite)}
                             onCancel={() => setExpandedCell(null)}
                             onSave={persistExpansionSave}
                         />

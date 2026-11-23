@@ -63,6 +63,7 @@ import {
     RotateCcw,
     Columns3,
     Paintbrush,
+    Lock,
 } from 'lucide-react';
 import {usePlatformCapabilities} from '@/hooks/usePlatformCapabilities';
 import {getJsonViewerSessionHost} from '@/platform/secondaryWindowSessions';
@@ -105,6 +106,14 @@ import {
     getFrozenFirstColumnLayout,
     FROZEN_HEADER_CELL_CLASS,
 } from '@/utils/dataGrid';
+import {
+    resolveCellEdit,
+    cellEditState,
+    stageCellChange,
+    type CellDestination,
+    type ColumnEditState,
+    type PendingChangeTarget,
+} from '@/utils/columnSources';
 import {isTypingTarget} from '@/utils/keyboardEvents';
 import {getSortButtonAction} from '@/utils/tableToolbar';
 import {useSettings} from '@/hooks/useSettings';
@@ -252,7 +261,25 @@ interface DataGridProps {
     pendingChanges?: Record<string, {pkOriginalValue: unknown; changes: Record<string, unknown>}>;
     pendingDeletions?: Record<string, unknown>;
     pendingInsertions?: Record<string, PendingInsertion>;
-    onPendingChange?: (pkVal: unknown, colName: string, value: unknown) => void;
+    /**
+     * `target` is set when the cell belongs to a source table of a join
+     * (`columnEdits`): `colName` is then the column's name in that table and
+     * `target.key` the key of the row in `pendingChanges`.
+     */
+    onPendingChange?: (
+        pkVal: unknown,
+        colName: string,
+        value: unknown,
+        target?: PendingChangeTarget,
+    ) => void;
+    /**
+     * Per-column editability for a result whose driver reports column origins
+     * (`column_sources`, #690), aligned with `columns`. When set, a cell writes
+     * to its own source table (`tableName` / `pkColumns` are left empty), and
+     * insert, delete, duplicate, the row sidebar and column metadata features
+     * stay off.
+     */
+    columnEdits?: ColumnEditState[];
     onPendingInsertionChange?: (tempId: string, colName: string, value: unknown) => void;
     onDiscardInsertion?: (tempId: string) => void;
     onRevertDeletion?: (pkVal: unknown) => void;
@@ -414,6 +441,7 @@ export const DataGrid = React.memo(function DataGrid({
     pendingDeletions,
     pendingInsertions,
     onPendingChange,
+    columnEdits,
     onPendingInsertionChange,
     onDiscardInsertion,
     onRevertDeletion,
@@ -692,6 +720,30 @@ export const DataGrid = React.memo(function DataGrid({
         return indices;
     }, [columns, pkColumns]);
 
+    // Where an existing row's cell writes to. With `columnEdits` that is the
+    // cell's own source table and its key values; otherwise the grid's single
+    // table, addressed by its key. Null when the cell cannot be written.
+    const resolveCellWrite = useCallback(
+        (row: unknown[], colIndex: number): CellDestination | null => {
+            if (columnEdits) {
+                const edit = resolveCellEdit(columnEdits, row, colIndex);
+                if (!edit) return null;
+                return {
+                    pkMap: edit.pkMap,
+                    colName: edit.target.column,
+                    target: {
+                        ...(edit.target.schema ? {schema: edit.target.schema} : {}),
+                        table: edit.target.table,
+                        key: edit.pendingKey,
+                    },
+                };
+            }
+            if (pkIndexMaps.length === 0 || !pkColumns) return null;
+            return {pkMap: buildPkMap(pkColumns, row, pkIndexMaps), colName: columns[colIndex]};
+        },
+        [columnEdits, columns, pkColumns, pkIndexMaps],
+    );
+
     // Create column type map for O(1) lookup during cell rendering
     const columnTypeMap = useMemo(() => {
         if (!columnMetadata) return null;
@@ -818,21 +870,21 @@ export const DataGrid = React.memo(function DataGrid({
             isInsertion: boolean,
             tempId: string | undefined,
             readOnly: boolean,
+            colIndex: number,
         ) => {
-            const editable = !readOnly && ((isInsertion && !!tempId) || pkIndexMaps.length > 0);
+            const write = isInsertion ? null : resolveCellWrite(rowData, colIndex);
+            const editable = !readOnly && ((isInsertion && !!tempId) || write !== null);
             const end = editable ? beginJsonEdit() : undefined;
             try {
                 const rowLabel = buildRowLabel(rowData, rowIndex, isInsertion);
                 let cellKey: string | null = null;
-                const canSaveBack =
-                    (isInsertion && !!tempId) || (!isInsertion && pkIndexMaps.length > 0);
+                const canSaveBack = (isInsertion && !!tempId) || (!isInsertion && write !== null);
                 if (isInsertion && tempId) {
                     cellKey = `ins:${tempId}:${colName}`;
-                } else if (!isInsertion && pkIndexMaps.length > 0) {
-                    const pkMapVal = buildPkMap(pkColumns!, rowData, pkIndexMaps);
-                    const serialized = serializePkKey(pkMapVal);
+                } else if (write) {
+                    const serialized = write.target?.key ?? serializePkKey(write.pkMap);
                     if (serialized !== '' && serialized !== 'null' && serialized !== 'undefined') {
-                        cellKey = `pk:${serialized}:${colName}`;
+                        cellKey = `pk:${serialized}:${write.colName}`;
                     }
                 }
                 await getJsonViewerSessionHost(platform).open(
@@ -849,13 +901,8 @@ export const DataGrid = React.memo(function DataGrid({
                         : (savedValue) => {
                               if (isInsertion && onPendingInsertionChange && tempId) {
                                   onPendingInsertionChange(tempId, colName, savedValue);
-                              } else if (
-                                  !isInsertion &&
-                                  onPendingChange &&
-                                  pkIndexMaps.length > 0
-                              ) {
-                                  const pkMapVal = buildPkMap(pkColumns!, rowData, pkIndexMaps);
-                                  onPendingChange(pkMapVal, colName, savedValue);
+                              } else if (write && onPendingChange) {
+                                  stageCellChange(onPendingChange, write, savedValue);
                               }
                           },
                     end,
@@ -869,8 +916,7 @@ export const DataGrid = React.memo(function DataGrid({
             buildRowLabel,
             onPendingChange,
             onPendingInsertionChange,
-            pkIndexMaps,
-            pkColumns,
+            resolveCellWrite,
             platform,
             beginJsonEdit,
         ],
@@ -1268,11 +1314,38 @@ export const DataGrid = React.memo(function DataGrid({
                     isInsertion,
                     mergedRow.tempId,
                     (readonlyProp ?? false) || isGeneratedColumn,
+                    colIndex,
                 );
                 return;
             }
 
             if (isGeneratedColumn) {
+                return;
+            }
+
+            if (columnEdits) {
+                // Joined result (#690): each column edits through its own source
+                // table. A read-only cell says why instead of ignoring the click.
+                if (readonlyProp || mergedRow.type === 'insertion') return;
+                const {state, detail} = cellEditState(columnEdits, mergedRow.rowData, colIndex);
+                if (state !== 'editable') {
+                    showAlert(t(`dataGrid.sourceEdit.reason.${state}`, {detail: detail ?? ''}), {
+                        title: t('common.error'),
+                        kind: 'warning',
+                    });
+                    return;
+                }
+                if (directValue !== undefined) {
+                    editingCellRef.current = {rowIndex, colIndex, value: directValue};
+                    setEditingCell(editingCellRef.current);
+                    return true;
+                }
+                setEditingCell({
+                    rowIndex,
+                    colIndex,
+                    value:
+                        value !== null && typeof value === 'object' ? JSON.stringify(value) : value,
+                });
                 return;
             }
 
@@ -1371,6 +1444,7 @@ export const DataGrid = React.memo(function DataGrid({
         },
         [
             tableName,
+            columnEdits,
             readonlyProp,
             mergedRows,
             pkColumns,
@@ -1401,7 +1475,7 @@ export const DataGrid = React.memo(function DataGrid({
         // Prevent multiple concurrent commits (e.g., from rapid blur events)
         if (isCommittingRef.current) return;
         const editingCell = editingCellRef.current;
-        if (!editingCell || !tableName) {
+        if (!editingCell || (!tableName && !columnEdits)) {
             closeEditor();
             return;
         }
@@ -1451,22 +1525,28 @@ export const DataGrid = React.memo(function DataGrid({
                 return;
             }
 
-            // PK Value - check pkIndexMaps is valid
-            if (pkIndexMaps.length === 0 || !pkColumns) {
+            // Where this cell writes: needs a usable key (or, for a joined
+            // result, the cell's own source table with a non-NULL key)
+            const write = resolveCellWrite(row, colIndex);
+            if (!write) {
                 closeEditor();
                 return;
             }
-            const pkMapVal = buildPkMap(pkColumns, row, pkIndexMaps);
-            const colName = columns[colIndex];
+            const pkMapVal = write.pkMap;
+            const colName = write.colName;
 
             if (onPendingChange) {
                 // If value matches original, pass undefined to remove the pending change
-                onPendingChange(pkMapVal, colName, isUnchanged ? undefined : value);
+                stageCellChange(onPendingChange, write, isUnchanged ? undefined : value);
                 closeEditor();
                 return;
             }
 
             if (!connectionId) return;
+            if (!tableName) {
+                closeEditor();
+                return;
+            }
 
             // Production safety: this path writes immediately, without the
             // staged-changes commit (which has its own guard upstream).
@@ -1500,12 +1580,12 @@ export const DataGrid = React.memo(function DataGrid({
         }
     }, [
         tableName,
+        columnEdits,
         mergedRows,
         columns,
         onPendingInsertionChange,
         onPendingChange,
-        pkIndexMaps,
-        pkColumns,
+        resolveCellWrite,
         connectionId,
         activeSchema,
         database,
@@ -2033,6 +2113,25 @@ export const DataGrid = React.memo(function DataGrid({
             return;
         }
 
+        // Joined result (#690): revert the staged changes of the clicked cell's
+        // table row (not of the other tables' rows on the same result row).
+        if (columnEdits) {
+            const write = resolveCellWrite(contextMenu.row, contextMenu.colIndex);
+            const staged = write?.target ? pendingChanges?.[write.target.key] : undefined;
+            if (write && staged && onPendingChange) {
+                onBeginBatchEdit?.();
+                try {
+                    Object.keys(staged.changes).forEach((colName) => {
+                        onPendingChange(write.pkMap, colName, undefined, write.target);
+                    });
+                } finally {
+                    onEndBatchEdit?.();
+                }
+            }
+            setContextMenu(null);
+            return;
+        }
+
         // For existing rows, need pkColumns
         if (!pkColumns || pkIndexMaps.length === 0) return;
 
@@ -2064,6 +2163,10 @@ export const DataGrid = React.memo(function DataGrid({
         onPendingChange,
         onRevertDeletion,
         onDiscardInsertion,
+        columnEdits,
+        resolveCellWrite,
+        onBeginBatchEdit,
+        onEndBatchEdit,
         pkColumns,
         pkIndexMaps,
         pendingChanges,
@@ -2232,6 +2335,7 @@ export const DataGrid = React.memo(function DataGrid({
             isInsertion,
             contextMenu.mergedRow?.tempId,
             readonlyProp ?? false,
+            contextMenu.colIndex,
         );
         setContextMenu(null);
     }, [contextMenu, openJsonViewerWindow, readonlyProp]);
@@ -2245,13 +2349,13 @@ export const DataGrid = React.memo(function DataGrid({
 
             if (isInsertion && onPendingInsertionChange && mergedRow.tempId) {
                 onPendingInsertionChange(mergedRow.tempId, colName, value);
-            } else if (onPendingChange && pkIndexMaps.length > 0) {
-                const pkMapVal = buildPkMap(pkColumns!, contextMenu.row, pkIndexMaps);
-                onPendingChange(pkMapVal, colName, value);
+            } else if (onPendingChange) {
+                const write = resolveCellWrite(contextMenu.row, contextMenu.colIndex);
+                if (write) stageCellChange(onPendingChange, write, value);
             }
             setContextMenu(null);
         },
-        [contextMenu, onPendingInsertionChange, onPendingChange, pkIndexMaps, pkColumns],
+        [contextMenu, onPendingInsertionChange, onPendingChange, resolveCellWrite],
     );
 
     const setCellGenerate = useCallback(() => setCellValue(null), [setCellValue]);
@@ -2267,7 +2371,7 @@ export const DataGrid = React.memo(function DataGrid({
 
     const setCellServerNow = useCallback(() => {
         if (!contextMenu || !connectionId) return;
-        const {colName, mergedRow, row} = contextMenu;
+        const {colName, colIndex, mergedRow, row} = contextMenu;
         const isInsertion = mergedRow?.type === 'insertion';
         const colDataType = columnTypeMap?.get(colName) ?? '';
         const dateMode = getDateInputMode(colDataType);
@@ -2280,9 +2384,9 @@ export const DataGrid = React.memo(function DataGrid({
                 const formatted = formatDateTime(parseDateTime(raw), dateMode);
                 if (isInsertion && onPendingInsertionChange && mergedRow?.tempId) {
                     onPendingInsertionChange(mergedRow.tempId, colName, formatted);
-                } else if (onPendingChange && pkIndexMaps.length > 0) {
-                    const pkMapVal = buildPkMap(pkColumns!, row, pkIndexMaps);
-                    onPendingChange(pkMapVal, colName, formatted);
+                } else if (onPendingChange) {
+                    const write = resolveCellWrite(row, colIndex);
+                    if (write) stageCellChange(onPendingChange, write, formatted);
                 }
             })
             .catch((err) => {
@@ -2294,8 +2398,7 @@ export const DataGrid = React.memo(function DataGrid({
         columnTypeMap,
         onPendingInsertionChange,
         onPendingChange,
-        pkIndexMaps,
-        pkColumns,
+        resolveCellWrite,
         t,
         showAlert,
         client,
@@ -2882,7 +2985,8 @@ export const DataGrid = React.memo(function DataGrid({
             }
             let applied = 0;
             try {
-                const canEditExisting = !!onPendingChange && !!pkColumns && pkIndexMaps.length > 0;
+                const canEditExisting =
+                    !!onPendingChange && (!!columnEdits || (!!pkColumns && pkIndexMaps.length > 0));
                 for (const {rowIndex, colIndex, value} of writes) {
                     const mergedRow = mergedRows[rowIndex];
                     if (!mergedRow) continue;
@@ -2900,14 +3004,22 @@ export const DataGrid = React.memo(function DataGrid({
                     } else if (canEditExisting) {
                         // Same guard as inline editing: aliases and computed result
                         // columns are not physical columns and must not be staged.
-                        if (physicalColumnSet && !physicalColumnSet.has(colName.toLowerCase())) {
+                        if (
+                            !columnEdits &&
+                            physicalColumnSet &&
+                            !physicalColumnSet.has(colName.toLowerCase())
+                        ) {
                             continue;
                         }
-                        const pkMapVal = buildPkMap(pkColumns!, mergedRow.rowData, pkIndexMaps);
+                        // A joined result writes each cell to its own table; cells
+                        // that are read-only (computed, key columns, a NULL key on
+                        // the outer side of a join) are skipped.
+                        const write = resolveCellWrite(mergedRow.rowData, colIndex);
+                        if (!write) continue;
                         // Same convention as handleEditCommit: writing the original value
                         // back clears any pending change instead of staging a no-op.
                         const isUnchanged = isOriginalCellValue(value, mergedRow.rowData[colIndex]);
-                        onPendingChange!(pkMapVal, colName, isUnchanged ? undefined : value);
+                        stageCellChange(onPendingChange!, write, isUnchanged ? undefined : value);
                         applied++;
                     }
                 }
@@ -2928,6 +3040,8 @@ export const DataGrid = React.memo(function DataGrid({
             isCellMasked,
             onPendingChange,
             onPendingInsertionChange,
+            columnEdits,
+            resolveCellWrite,
             pkColumns,
             pkIndexMaps,
         ],
@@ -3662,6 +3776,8 @@ export const DataGrid = React.memo(function DataGrid({
             booleanTypeMap,
             changeBooleanCell,
             tableName,
+            columnEdits,
+            resolveCellWrite,
             generatedColumns,
             columns,
             autoIncrementColumns,
@@ -3714,6 +3830,8 @@ export const DataGrid = React.memo(function DataGrid({
             booleanTypeMap,
             changeBooleanCell,
             tableName,
+            columnEdits,
+            resolveCellWrite,
             generatedColumns,
             columns,
             autoIncrementColumns,
@@ -3774,9 +3892,42 @@ export const DataGrid = React.memo(function DataGrid({
         return tableColumns.map((_, colIndex) => {
             const header = headers[colIndex];
             if (!header) return null;
+            const columnEdit = columnEdits?.[colIndex];
             return (
                 <div className="flex items-center gap-1">
                     {flexRender(header.column.columnDef.header, header.getContext())}
+                    {columnEdit &&
+                        (() => {
+                            // Pencil or lock: a focusable button, so the reason is
+                            // reachable by keyboard and read by screen readers, not
+                            // only shown as a mouse tooltip.
+                            const label = columnEdit.editable
+                                ? t('dataGrid.sourceEdit.editable', {
+                                      table: columnEdit.target.table,
+                                  })
+                                : t(`dataGrid.sourceEdit.reason.${columnEdit.reason}`, {
+                                      detail: columnEdit.detail ?? '',
+                                  });
+                            return (
+                                <button
+                                    type="button"
+                                    aria-label={label}
+                                    title={label}
+                                    data-column-edit={columnEdit.editable ? 'editable' : 'readonly'}
+                                    onClick={(e) => e.stopPropagation()}
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    className={`shrink-0 rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus ${
+                                        columnEdit.editable ? 'text-accent' : 'text-muted'
+                                    }`}
+                                >
+                                    {columnEdit.editable ? (
+                                        <PencilLine size={12} aria-hidden="true" />
+                                    ) : (
+                                        <Lock size={12} aria-hidden="true" />
+                                    )}
+                                </button>
+                            );
+                        })()}
                     {maskedColIndices.has(colIndex) && (
                         <button
                             type="button"
@@ -3802,7 +3953,15 @@ export const DataGrid = React.memo(function DataGrid({
                 </div>
             );
         });
-    }, [table, tableColumns, maskedColIndices, revealedColIndices, toggleRevealColumn, t]);
+    }, [
+        table,
+        tableColumns,
+        columnEdits,
+        maskedColIndices,
+        revealedColIndices,
+        toggleRevealColumn,
+        t,
+    ]);
 
     // Transposed layout (#561): per-record state for the record columns in the
     // horizontal virtual window, shared by every field row. getVirtualItems()
@@ -4343,8 +4502,13 @@ export const DataGrid = React.memo(function DataGrid({
                                       buildPkMap(pkColumns, contextMenu.row, pkIndexMaps),
                                   )
                                 : null;
-                        const hasPendingChanges =
-                            !isInsertion && pkVal && pendingChanges?.[pkVal] !== undefined;
+                        const cellWrite =
+                            columnEdits && !isInsertion
+                                ? resolveCellWrite(contextMenu.row, contextMenu.colIndex)
+                                : null;
+                        const hasPendingChanges = cellWrite?.target
+                            ? pendingChanges?.[cellWrite.target.key] !== undefined
+                            : !isInsertion && pkVal && pendingChanges?.[pkVal] !== undefined;
                         const hasPendingDeletion =
                             !isInsertion && pkVal && pendingDeletions?.[pkVal] !== undefined;
 
@@ -4363,6 +4527,9 @@ export const DataGrid = React.memo(function DataGrid({
                         const colDataType = columnTypeMap?.get(colName) ?? '';
                         const contextCellValue = contextMenu.row[contextMenu.colIndex];
                         const isReadonlyGrid = Boolean(readonlyProp) || !tableName;
+                        // A joined result (#690) has no single table, but its cells
+                        // still take pasted values and their staged edits can be reverted.
+                        const isSourceEditGrid = Boolean(columnEdits) && !readonlyProp;
 
                         // Build menu items dynamically
                         const menuItems: ContextMenuItem[] = [];
@@ -4813,7 +4980,7 @@ export const DataGrid = React.memo(function DataGrid({
                             },
                         });
 
-                        if (!isReadonlyGrid) {
+                        if (!isReadonlyGrid || isSourceEditGrid) {
                             menuItems.push({
                                 label: t('dataGrid.pasteCells'),
                                 icon: ClipboardPaste,
@@ -4824,6 +4991,15 @@ export const DataGrid = React.memo(function DataGrid({
                                         colIndex: contextMenu.colIndex,
                                     });
                                 },
+                            });
+                        }
+
+                        if (isSourceEditGrid) {
+                            menuItems.push({
+                                label: t('dataGrid.revertSelected'),
+                                icon: Undo,
+                                action: revertSelectedRow,
+                                disabled: !canRevert,
                             });
                         }
 

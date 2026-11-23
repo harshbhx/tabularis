@@ -1668,6 +1668,22 @@
     "useShownValue": "Usar este valor"
   },
   "dataGrid": {
+    "sourceEdit": {
+      "editable": "Editable: se guarda en la tabla \"{{table}}\". Las celdas de filas sin registro correspondiente en esta tabla (outer join) siguen siendo de solo lectura.",
+      "reason": {
+        "unknown": "Solo lectura: el controlador de la base de datos no indica de qué tabla procede esta columna.",
+        "computed": "Solo lectura: esta columna es una expresión o un valor calculado, por lo que no tiene tabla de origen.",
+        "noMetadata": "Solo lectura: no se pudo cargar la estructura de su tabla de origen \"{{detail}}\".",
+        "view": "Solo lectura: \"{{detail}}\" es una vista.",
+        "ambiguous": "Solo lectura: la tabla \"{{detail}}\" aparece más de una vez en esta consulta y sus instancias no se pueden distinguir.",
+        "missingColumn": "Solo lectura: \"{{detail}}\" no es una columna de su tabla de origen.",
+        "generated": "Solo lectura: \"{{detail}}\" es una columna generada.",
+        "primaryKey": "Solo lectura: \"{{detail}}\" forma parte de la clave primaria, que identifica la fila.",
+        "noPrimaryKey": "Solo lectura: la tabla \"{{detail}}\" no tiene clave primaria.",
+        "missingKey": "Solo lectura: las columnas de clave primaria {{detail}} de su tabla de origen no están en el resultado.",
+        "nullKey": "Solo lectura: esta fila no tiene registro correspondiente en la tabla de esta columna (lado vacío de un outer join)."
+      }
+    },
     "jumpToColumn": "Ir a columna",
     "searchColumns": "Buscar columnas",
     "noMatchingColumns": "No hay columnas coincidentes",
